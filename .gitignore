@@ -1,0 +1,8 @@
+#maven artifacts
+target/
+
+#eclipse artifacts
+.*/
+.classpath
+.project
+*.swp
