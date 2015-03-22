@@ -48,8 +48,8 @@ If using this repository, download or clone the repo and run
 
 If using the full YCSB package then:
 
-    Download and install YCSB.  Replace YCSB/mongodb/src/main/java/com/yahoo/ycsb/db/MongoDbClient.java
-    unzip master
+    Download and install YCSB.  
+    Replace YCSB/mongodb/src/main/java/com/yahoo/ycsb/db/MongoDbClient.java
     cd YCSB-master
     mvn -pl com.yahoo.ycsb:core,com.yahoo.ycsb:mongodb-binding clean package
 
@@ -67,7 +67,7 @@ See the next section for the list of configuration parameters for MongoDB.
 
 ## MongoDB Configuration Parameters
 
-- `mongodb.url` default: `mongodb://localhost:27017`
+- `mongodb.url` default: `localhost:27017`
 
 - `mongodb.database` default: `ycsb`
 

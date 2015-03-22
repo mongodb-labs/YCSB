@@ -94,7 +94,7 @@ public class MongoDbClient extends DB {
 
             // initialize MongoDb driver
             Properties props = getProperties();
-            String url = props.getProperty("mongodb.url", "mongodb://localhost:27017");
+            String url = props.getProperty("mongodb.url", "localhost:27017");
 
             database = props.getProperty("mongodb.database", "ycsb");
 
