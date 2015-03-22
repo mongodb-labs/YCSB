@@ -98,8 +98,8 @@ public class MongoDbClient extends DB {
 
             database = props.getProperty("mongodb.database", "ycsb");
 
-            // Set insert batchsize, default 100 - set to "1" to be YCSB-original equivalent
-            final String batchSizeString = props.getProperty("batchsize", "100");
+            // Set insert batchsize, default 1 - to be YCSB-original equivalent
+            final String batchSizeString = props.getProperty("batchsize", "1");
             BATCHSIZE = Integer.parseInt(batchSizeString);
 
             // Set connectionpool to size of ycsb thread pool
