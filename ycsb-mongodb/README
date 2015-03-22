@@ -34,11 +34,10 @@ Getting Started
    
    See https://github.com/brianfrankcooper/YCSB/wiki/Running-a-Workload
    for a detailed documentation on how to run a workload 
-   and https://github.com/10gen-labs/YCSB/wiki/Running-YCSB-on-MongoDB
-   for a detailed documentation on how to run YCSB on MongoDB
 
    See https://github.com/brianfrankcooper/YCSB/wiki/Core-Properties for 
    the list of available workload properties.
-   and https://github.com/10gen-labs/YCSB/wiki for
+
+   See https://github.com/10gen-labs/YCSB/wiki for
    additional and changed MongoDB properties
    
