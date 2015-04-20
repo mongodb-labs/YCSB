@@ -321,7 +321,7 @@ public class MongoDbClient extends DB {
                 result.putAll(queryResult.toMap());
                 return 0;
             }
-            System.err.println("No returns returned for key " + key);
+            System.err.println("No results returned for key " + key);
             return 1;
         }
         catch (Exception e) {
@@ -356,7 +356,7 @@ public class MongoDbClient extends DB {
             u.put("$set", fieldsToSet);
             WriteResult res = collection.update(q, u);
             if (res.getN() == 0) {
-                System.err.println("Nothing updated! for key " + key);
+                System.err.println("Nothing updated for key " + key);
                 return 1;
             }
             return 0;
@@ -396,6 +396,10 @@ public class MongoDbClient extends DB {
                 }
             }
             cursor = collection.find(q, fieldsToReturn).sort(s).limit(recordcount);
+            if (!cursor.hasNext()) {
+                System.err.println("Nothing found in scan for key " + startkey);
+                return 1;
+            }
             while (cursor.hasNext()) {
                 // toMap() returns a Map, but result.add() expects a
                 // Map<String,String>. Hence, the suppress warnings.
@@ -407,7 +411,7 @@ public class MongoDbClient extends DB {
                 result.add(resultMap);
             }
 
-            return cursor != null ? 0 : 1;
+            return 0;
         }
         catch (Exception e) {
             System.err.println(e.toString());
