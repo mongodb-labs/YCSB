@@ -160,13 +160,13 @@ public class MongoDbClient extends DB {
 
                 MongoClientOptions.Builder builder = new MongoClientOptions.Builder();
                 builder.cursorFinalizerEnabled(false);
+                builder.connectionsPerHost(Integer.parseInt(maxConnections));
                 builder.writeConcern(writeConcern);
                 builder.readPreference(readPreference);
 
                 String[] server = urls.split(",");
                 mongo = new MongoClient[server.length];
                 db = new com.mongodb.DB[server.length];
-                builder.connectionsPerHost((Integer)(Integer.parseInt(maxConnections)/server.length));
                 for (int i=0; i<server.length; i++) {
                    String url=server[i];
                    System.err.println("Found server connection string " + url);
@@ -198,11 +198,23 @@ public class MongoDbClient extends DB {
      */
     @Override
     public void cleanup() throws DBException {
+<<<<<<< HEAD
         if (initCount.decrementAndGet() == 0) {
              for (int i=0;i<mongo.length;i++) { 
                 try {
                    mongo[i].close(); 
                } catch (Exception e1) { /* ignore */ }
+=======
+        if (initCount.decrementAndGet() <= 0) {
+            try {
+                for (int i=0;i<mongo.length;i++) mongo[i].close();
+            }
+            catch (Exception e1) {
+                System.err.println("Could not close MongoDB connection pool: "
+                        + e1.toString());
+                e1.printStackTrace();
+                return;
+>>>>>>> parent of e73dbf7... fix connection pool size and cleanup code
             }
         }
     }
