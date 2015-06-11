@@ -45,8 +45,11 @@ import com.yahoo.ycsb.DBException;
  *
  * Properties to set:
  *
- * mongodb.url=mongodb://localhost:27017 mongodb.database=ycsb
- * mongodb.writeConcern=acknowledged
+ * mongodb.url=mongodb://localhost:27017 mongodb.database=ycsb mongodb.writeConcern=acknowledged
+ * For replica set use:
+ * mongodb.url=mongodb://hostname:27017?replicaSet=nameOfYourReplSet
+ * to pass connection to multiple mongos end points to round-robin between them, separate
+ * hostnames with "|" character
  *
  * @author ypai
  */
@@ -164,7 +167,7 @@ public class MongoDbClient extends DB {
                 builder.writeConcern(writeConcern);
                 builder.readPreference(readPreference);
 
-                String[] server = urls.split(",");
+                String[] server = urls.split("|");
                 mongo = new MongoClient[server.length];
                 db = new com.mongodb.DB[server.length];
                 for (int i=0; i<server.length; i++) {
