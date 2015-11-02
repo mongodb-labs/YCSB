@@ -85,6 +85,10 @@ public class MongoDbClient extends DB {
 
     private static InsertOptions io = new InsertOptions().continueOnError(true);
 
+    /** Measure of how compressible the data is, compressibility=10 means the data can compress tenfold.
+     *  The default is 1, which is uncompressible */
+    private static float compressibility = (float) 1.0;
+
     /**
      * Initialize any state for this DB.
      * Called once per DB instance; there is one DB instance per client thread.
@@ -106,6 +110,9 @@ public class MongoDbClient extends DB {
             // Set insert batchsize, default 1 - to be YCSB-original equivalent
             final String batchSizeString = props.getProperty("batchsize", "1");
             BATCHSIZE = Integer.parseInt(batchSizeString);
+
+            final String compressibilityString = props.getProperty("compressibility", "1");
+            this.compressibility = Float.parseFloat(compressibilityString);
 
             // Set connectionpool to size of ycsb thread pool
             final String maxConnections = props.getProperty("threadcount", "100");
@@ -210,6 +217,16 @@ public class MongoDbClient extends DB {
         }
     }
 
+    private byte[] applyCompressibility(byte[] data){
+        long string_length = data.length;
+
+        long random_string_length = (int) Math.round(string_length /compressibility);
+        long compressible_len = string_length - random_string_length;
+        for(int i=0;i<compressible_len;i++)
+            data[i] = 0;
+        return data;
+    }
+
     /**
      * Delete a record from the database.
      *
@@ -247,7 +264,8 @@ public class MongoDbClient extends DB {
         DBCollection collection = db[serverCounter++%db.length].getCollection(table);
         DBObject r = new BasicDBObject().append("_id", key);
         for (String k : values.keySet()) {
-            r.put(k, values.get(k).toArray());
+            byte[] data = values.get(k).toArray();
+            r.put(k,applyCompressibility(data));
         }
         if (BATCHSIZE == 1 ) {
            try {
@@ -349,8 +367,8 @@ public class MongoDbClient extends DB {
             Iterator<String> keys = values.keySet().iterator();
             while (keys.hasNext()) {
                 String tmpKey = keys.next();
-                fieldsToSet.put(tmpKey, values.get(tmpKey).toArray());
-
+                byte[] data = values.get(tmpKey).toArray();
+                fieldsToSet.put(tmpKey, applyCompressibility(data));
             }
             u.put("$set", fieldsToSet);
             WriteResult res = collection.update(q, u);
