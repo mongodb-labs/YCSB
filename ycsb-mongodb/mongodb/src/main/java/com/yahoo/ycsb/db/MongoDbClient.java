@@ -167,7 +167,7 @@ public class MongoDbClient extends DB {
                 builder.writeConcern(writeConcern);
                 builder.readPreference(readPreference);
 
-                String[] server = urls.split("|");
+                String[] server = urls.split("\\|"); // split on the "|" character
                 mongo = new MongoClient[server.length];
                 db = new com.mongodb.DB[server.length];
                 for (int i=0; i<server.length; i++) {
