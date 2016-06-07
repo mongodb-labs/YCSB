@@ -43,15 +43,8 @@ Reload bash and test mvn
 
 ### 3. Set Up YCSB
 
-If using this repository, download or clone the repo and run
+Download or clone the repo, cd into it and run
     mvn clean package
-
-If using the full YCSB package then:
-
-    Download and install YCSB.  
-    Replace YCSB/mongodb/src/main/java/com/yahoo/ycsb/db/MongoDbClient.java
-    cd YCSB-master
-    mvn -pl com.yahoo.ycsb:core,com.yahoo.ycsb:mongodb-binding clean package
 
 ### 4. Run YCSB
     
