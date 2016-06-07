@@ -44,6 +44,7 @@ Reload bash and test mvn
 ### 3. Set Up YCSB
 
 Download or clone the repo, cd into it and run
+
     mvn clean package
 
 ### 4. Run YCSB
