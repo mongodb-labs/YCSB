@@ -19,7 +19,7 @@ package com.yahoo.ycsb;
 
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicBoolean;
-
+import java.lang.Integer;
 /**
  * One experiment scenario. One object of this type will
  * be instantiated and shared among all client threads. This class
@@ -64,7 +64,7 @@ public abstract class Workload
        */
       public Object initThread(Properties p, int mythreadid, int threadcount) throws WorkloadException
       {
-	 return null;
+	 return new Integer(mythreadid);
       }
       
       /**
