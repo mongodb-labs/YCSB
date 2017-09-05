@@ -43,7 +43,7 @@ Reload bash and test mvn
 
 ### 3. Set Up YCSB
 
-Download or clone the repo, cd into ycsb-mongodb and run
+Download or clone the repo, cd into `ycsb-mongodb` and run
 
     mvn clean package
 
