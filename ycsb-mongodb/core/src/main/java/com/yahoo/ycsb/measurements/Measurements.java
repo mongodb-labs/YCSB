@@ -44,9 +44,9 @@ public class Measurements
         measurementproperties=props;
     }
 
-      /**
-       * Return the singleton Measurements object.
-       */
+    /**
+     * Return the singleton Measurements object.
+     */
     public synchronized static Measurements getMeasurements()
     {
         if (singleton==null)
@@ -61,9 +61,9 @@ public class Measurements
 
     private Properties _props;
 
-      /**
-       * Create a new object with the specified properties.
-       */
+    /**
+     * Create a new object with the specified properties.
+     */
     public Measurements(Properties props)
     {
         data=new HashMap<String,OneMeasurement>();
@@ -80,33 +80,38 @@ public class Measurements
         }
     }
 
-    OneMeasurement constructOneMeasurement(String name)
+    public synchronized void initMeasurement(String op)
     {
-        if (histogram)
+        // If we already have a measurement, don't bother with synching
+        if (data.containsKey(op))
         {
-            return new OneMeasurementHistogram(name,_props);
+            return;
         }
-        else
-        {
-            return new OneMeasurementTimeSeries(name,_props);
-        }
-    }
 
-      /**
-       * Report a single value of a single metric. E.g. for read latency, operation="READ" and latency is the measured value.
-       */
-    public synchronized void measure(String operation, int latency)
-    {
-        if (!data.containsKey(operation))
+        synchronized(this)
         {
-            synchronized(this)
+            if (data.containsKey(op))
             {
-                if (!data.containsKey(operation))
-                {
-                    data.put(operation,constructOneMeasurement(operation));
-                }
+                return;
+            }
+
+            if (histogram)
+            {
+                data.put(op,new OneMeasurementHistogram(op,_props));
+            }
+            else
+            {
+                data.put(op,new OneMeasurementTimeSeries(op,_props));
             }
         }
+
+    }
+
+    /**
+     * Report a single value of a single metric. E.g. for read latency, operation="READ" and latency is the measured value.
+     */
+    public synchronized void measure(String operation, int latency)
+    {
         try
         {
             data.get(operation).measure(latency);
@@ -119,41 +124,31 @@ public class Measurements
         }
     }
 
-      /**
-       * Report a return code for a single DB operaiton.
-       */
+    /**
+     * Report a return code for a single DB operaiton.
+     */
     public void reportReturnCode(String operation, int code)
     {
-        if (!data.containsKey(operation))
-        {
-            synchronized(this)
-            {
-                if (!data.containsKey(operation))
-                {
-                    data.put(operation,constructOneMeasurement(operation));
-                }
-            }
-        }
         data.get(operation).reportReturnCode(code);
     }
 
-  /**
-   * Export the current measurements to a suitable format.
-   *
-   * @param exporter Exporter representing the type of format to write to.
-   * @throws IOException Thrown if the export failed.
-   */
-  public void exportMeasurements(MeasurementsExporter exporter) throws IOException
-  {
-    for (OneMeasurement measurement : data.values())
+    /**
+     * Export the current measurements to a suitable format.
+     *
+     * @param exporter Exporter representing the type of format to write to.
+     * @throws IOException Thrown if the export failed.
+     */
+    public void exportMeasurements(MeasurementsExporter exporter) throws IOException
     {
-      measurement.exportMeasurements(exporter);
+        for (OneMeasurement measurement : data.values())
+        {
+            measurement.exportMeasurements(exporter);
+        }
     }
-  }
 
-      /**
-       * Return a one line summary of the measurements.
-       */
+    /**
+     * Return a one line summary of the measurements.
+     */
     public String getSummary()
     {
         String ret="";

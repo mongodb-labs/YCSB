@@ -38,18 +38,16 @@ class StatusThread extends Thread
 {
     Vector<Thread> _threads;
     String _label;
-    boolean _standardstatus;
 
     /**
      * The interval for reporting status.
      */
     public static final long sleeptime=10000;
 
-    public StatusThread(Vector<Thread> threads, String label, boolean standardstatus)
+    public StatusThread(Vector<Thread> threads, String label)
     {
         _threads=threads;
         _label=label;
-        _standardstatus=standardstatus;
     }
 
     /**
@@ -63,6 +61,9 @@ class StatusThread extends Thread
         long lasttotalops=0;
 
         boolean alldone;
+
+        DecimalFormat secsFormat=new DecimalFormat("0.0");
+        DecimalFormat thruFormat = new DecimalFormat("#.##");
 
         do
         {
@@ -92,27 +93,14 @@ class StatusThread extends Thread
             lasttotalops=totalops;
             lasten=en;
 
-            DecimalFormat d = new DecimalFormat("#.##");
-
+            String topString=_label+" "+secsFormat.format(interval/1000.0)+" sec: "+totalops+" operations; ";
             if (totalops==0)
             {
-                System.err.println(_label+" "+(interval/1000)+" sec: "+totalops+" operations; "+Measurements.getMeasurements().getSummary());
+                System.err.println(topString+Measurements.getMeasurements().getSummary());
             }
             else
             {
-                System.err.println(_label+" "+(interval/1000)+" sec: "+totalops+" operations; "+d.format(curthroughput)+" current ops/sec; "+Measurements.getMeasurements().getSummary());
-            }
-
-            if (_standardstatus)
-            {
-            if (totalops==0)
-            {
-                System.out.println(_label+" "+(interval/1000)+" sec: "+totalops+" operations; "+Measurements.getMeasurements().getSummary());
-            }
-            else
-            {
-                System.out.println(_label+" "+(interval/1000)+" sec: "+totalops+" operations; "+d.format(curthroughput)+" current ops/sec; "+Measurements.getMeasurements().getSummary());
-            }
+                System.err.println(topString+thruFormat.format(curthroughput)+" current ops/sec; "+Measurements.getMeasurements().getSummary());
             }
 
             try
@@ -209,12 +197,12 @@ class ClientThread extends Thread
         //spread the thread operations out so they don't all hit the DB at the same time
         try
         {
-           //GH issue 4 - throws exception if _target>1 because random.nextInt argument must be >0
-           //and the sleep() doesn't make sense for granularities < 1 ms anyway
-           if ( (_target>0) && (_target<=1.0) )
-           {
-              sleep(Utils.random().nextInt((int)(1.0/_target)));
-           }
+            //GH issue 4 - throws exception if _target>1 because random.nextInt argument must be >0
+            //and the sleep() doesn't make sense for granularities < 1 ms anyway
+            if ( (_target>0) && (_target<=1.0) )
+            {
+                sleep(Utils.random().nextInt((int)(1.0/_target)));
+            }
         }
         catch (InterruptedException e)
         {
@@ -335,9 +323,9 @@ public class Client
     public static final String INSERT_COUNT_PROPERTY="insertcount";
 
     /**
-   * The maximum amount of time (in seconds) for which the benchmark will be run.
-   */
-  public static final String MAX_EXECUTION_TIME = "maxexecutiontime";
+     * The maximum amount of time (in seconds) for which the benchmark will be run.
+     */
+    public static final String MAX_EXECUTION_TIME = "maxexecutiontime";
 
     public static void usageMessage()
     {
@@ -728,12 +716,7 @@ public class Client
 
         if (status)
         {
-            boolean standardstatus=false;
-            if (props.getProperty("measurementtype","").compareTo("timeseries")==0)
-            {
-                standardstatus=true;
-            }
-            statusthread=new StatusThread(threads,label,standardstatus);
+            statusthread=new StatusThread(threads,label);
             statusthread.start();
         }
 
@@ -744,14 +727,14 @@ public class Client
             t.start();
         }
 
-    Thread terminator = null;
+        Thread terminator = null;
 
-    if (maxExecutionTime > 0) {
-      terminator = new TerminatorThread(maxExecutionTime, threads, workload);
-      terminator.start();
-    }
+        if (maxExecutionTime > 0) {
+            terminator = new TerminatorThread(maxExecutionTime, threads, workload);
+            terminator.start();
+        }
 
-    int opsDone = 0;
+        int opsDone = 0;
 
         for (Thread t : threads)
         {
@@ -768,8 +751,8 @@ public class Client
         long en=System.currentTimeMillis();
 
         if (terminator != null && !terminator.isInterrupted()) {
-      terminator.interrupt();
-    }
+            terminator.interrupt();
+        }
 
         if (status)
         {

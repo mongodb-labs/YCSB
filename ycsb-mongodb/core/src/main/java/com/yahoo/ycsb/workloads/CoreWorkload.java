@@ -239,24 +239,24 @@ public class CoreWorkload extends Workload
     public static final String INSERT_ORDER_PROPERTY_DEFAULT="hashed";
 
     /**
-   * Percentage data items that constitute the hot set.
-   */
-  public static final String HOTSPOT_DATA_FRACTION = "hotspotdatafraction";
+     * Percentage data items that constitute the hot set.
+     */
+    public static final String HOTSPOT_DATA_FRACTION = "hotspotdatafraction";
 
-  /**
-   * Default value of the size of the hot set.
-   */
-  public static final String HOTSPOT_DATA_FRACTION_DEFAULT = "0.2";
+    /**
+     * Default value of the size of the hot set.
+     */
+    public static final String HOTSPOT_DATA_FRACTION_DEFAULT = "0.2";
 
-  /**
-   * Percentage operations that access the hot set.
-   */
-  public static final String HOTSPOT_OPN_FRACTION = "hotspotopnfraction";
+    /**
+     * Percentage operations that access the hot set.
+     */
+    public static final String HOTSPOT_OPN_FRACTION = "hotspotopnfraction";
 
-  /**
-   * Default value of the percentage operations accessing the hot set.
-   */
-  public static final String HOTSPOT_OPN_FRACTION_DEFAULT = "0.8";
+    /**
+     * Default value of the percentage operations accessing the hot set.
+     */
+    public static final String HOTSPOT_OPN_FRACTION_DEFAULT = "0.8";
 
     IntegerGenerator keysequence;
 
@@ -340,31 +340,42 @@ public class CoreWorkload extends Workload
             orderedinserts=true;
         }
 
+        Measurements meas=Measurements.getMeasurements();
         keysequence=new CounterGenerator(insertstart);
         operationchooser=new DiscreteGenerator();
         if (readproportion>0)
         {
-            operationchooser.addValue(readproportion,"READ");
+            String op="READ";
+            operationchooser.addValue(readproportion,op);
+            meas.initMeasurement(op);
         }
 
         if (updateproportion>0)
         {
-            operationchooser.addValue(updateproportion,"UPDATE");
+            String op="UPDATE";
+            operationchooser.addValue(updateproportion,op);
+            meas.initMeasurement(op);
         }
 
         if (insertproportion>0)
         {
-            operationchooser.addValue(insertproportion,"INSERT");
+            String op="INSERT";
+            operationchooser.addValue(insertproportion,op);
+            meas.initMeasurement(op);
         }
 
         if (scanproportion>0)
         {
-            operationchooser.addValue(scanproportion,"SCAN");
+            String op="SCAN";
+            operationchooser.addValue(scanproportion,op);
+            meas.initMeasurement(op);
         }
 
         if (readmodifywriteproportion>0)
         {
-            operationchooser.addValue(readmodifywriteproportion,"READMODIFYWRITE");
+            String op="READMODIFYWRITE";
+            operationchooser.addValue(readmodifywriteproportion,op);
+            meas.initMeasurement(op);
         }
 
         transactioninsertkeysequence=new CounterGenerator(recordcount);
@@ -392,13 +403,13 @@ public class CoreWorkload extends Workload
         }
         else if (requestdistrib.equals("hotspot"))
         {
-      double hotsetfraction = Double.parseDouble(p.getProperty(
-          HOTSPOT_DATA_FRACTION, HOTSPOT_DATA_FRACTION_DEFAULT));
-      double hotopnfraction = Double.parseDouble(p.getProperty(
-          HOTSPOT_OPN_FRACTION, HOTSPOT_OPN_FRACTION_DEFAULT));
-      keychooser = new HotspotIntegerGenerator(0, recordcount - 1,
-          hotsetfraction, hotopnfraction);
-    }
+            double hotsetfraction = Double.parseDouble(p.getProperty(
+                HOTSPOT_DATA_FRACTION, HOTSPOT_DATA_FRACTION_DEFAULT));
+            double hotopnfraction = Double.parseDouble(p.getProperty(
+                HOTSPOT_OPN_FRACTION, HOTSPOT_OPN_FRACTION_DEFAULT));
+            keychooser = new HotspotIntegerGenerator(0, recordcount - 1,
+                hotsetfraction, hotopnfraction);
+        }
         else
         {
             throw new WorkloadException("Unknown request distribution \""+requestdistrib+"\"");
@@ -578,7 +589,7 @@ public class CoreWorkload extends Workload
 
         long en=System.nanoTime();
 
-        Measurements.getMeasurements().measure("READ-MODIFY-WRITE", (int)((en-st)/1000));
+        Measurements.getMeasurements().measure("READMODIFYWRITE", (int)((en-st)/1000));
     }
 
     public void doTransactionScan(DB db)

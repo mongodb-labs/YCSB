@@ -36,6 +36,7 @@ public class DBWrapper extends DB
     {
         _db=db;
         _measurements=Measurements.getMeasurements();
+        _measurements.initMeasurement("CLEANUP");
     }
 
     /**
@@ -69,10 +70,10 @@ public class DBWrapper extends DB
      */
     public void cleanup() throws DBException
     {
-    long st=System.nanoTime();
+        long st=System.nanoTime();
         _db.cleanup();
-    long en=System.nanoTime();
-    _measurements.measure("CLEANUP", (int)((en-st)/1000));
+        long en=System.nanoTime();
+        _measurements.measure("CLEANUP", (int)((en-st)/1000));
     }
 
     /**

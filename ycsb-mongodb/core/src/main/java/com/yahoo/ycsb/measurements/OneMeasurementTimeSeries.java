@@ -29,11 +29,12 @@ class SeriesUnit
 {
     /**
      * @param time
-     * @param average
+     * @param sum
+     * @param count
      */
-    public SeriesUnit(long time, double average) {
+    public SeriesUnit(long time, long sum, long count) {
         this.time = time;
-        this.average = average;
+        this.average = (double)sum/(double)count;
     }
     public long time;
     public double average;
@@ -45,7 +46,7 @@ class SeriesUnit
 public class OneMeasurementTimeSeries extends OneMeasurement
 {
     /**
-     * Granularity for time series; measurements will be averaged in chunks of this granularity. Units are milliseconds.
+     * Granularity for time series; measurements will be averaged in chunks of this granularity. Units are microseconds.
      */
     public static final String GRANULARITY="timeseries.granularity";
 
@@ -54,8 +55,8 @@ public class OneMeasurementTimeSeries extends OneMeasurement
     int _granularity;
     Vector<SeriesUnit> _measurements;
 
-    long start=-1;
-    long currentunit=-1;
+    long start=0;
+    long lastUnit=0;
     int count=0;
     int sum=0;
     int operations=0;
@@ -76,26 +77,27 @@ public class OneMeasurementTimeSeries extends OneMeasurement
         _granularity=Integer.parseInt(props.getProperty(GRANULARITY,GRANULARITY_DEFAULT));
         _measurements=new Vector<SeriesUnit>();
         returncodes=new HashMap<Integer,int[]>();
+        start=System.nanoTime()/1000;
+
+        // Set an initial pin
+        _measurements.add(new SeriesUnit(0,0,1));
     }
 
     void checkEndOfUnit(boolean forceend)
     {
-        long now=System.currentTimeMillis();
+        long now=(System.nanoTime()/1000)-start;
 
-        if (start<0)
+        long diff=now-lastUnit;
+        if ( (diff>=_granularity) || (forceend) )
         {
-            currentunit=0;
-            start=now;
-        }
+            if(count==0)
+            {
+                return;
+            }
 
-        long unit=((now-start)/_granularity)*_granularity;
+            _measurements.add(new SeriesUnit(now,sum,count));
 
-        if ( (unit>currentunit) || (forceend) )
-        {
-            double avg=((double)sum)/((double)count);
-            _measurements.add(new SeriesUnit(currentunit,avg));
-
-            currentunit=unit;
+            lastUnit=now;
 
             count=0;
             sum=0;
@@ -126,29 +128,29 @@ public class OneMeasurementTimeSeries extends OneMeasurement
     }
 
 
-  @Override
-  public void exportMeasurements(MeasurementsExporter exporter) throws IOException
-  {
-    checkEndOfUnit(true);
-
-    exporter.write(getName(), "Operations", operations);
-    exporter.write(getName(), "AverageLatency(us)", (((double)totallatency)/((double)operations)));
-    exporter.write(getName(), "MinLatency(us)", min);
-    exporter.write(getName(), "MaxLatency(us)", max);
-
-    //TODO: 95th and 99th percentile latency
-
-    for (Integer I : returncodes.keySet())
+    @Override
+    public void exportMeasurements(MeasurementsExporter exporter) throws IOException
     {
-      int[] val=returncodes.get(I);
-      exporter.write(getName(), "Return="+I, val[0]);
-    }
+        checkEndOfUnit(true);
 
-    for (SeriesUnit unit : _measurements)
-    {
-      exporter.write(getName(), Long.toString(unit.time), unit.average);
+        exporter.write(getName(), "Operations", operations);
+        exporter.write(getName(), "AverageLatency(us)", (((double)totallatency)/((double)operations)));
+        exporter.write(getName(), "MinLatency(us)", min);
+        exporter.write(getName(), "MaxLatency(us)", max);
+
+        //TODO: 95th and 99th percentile latency
+
+        for (Integer I : returncodes.keySet())
+        {
+            int[] val=returncodes.get(I);
+            exporter.write(getName(), "Return="+I, val[0]);
+        }
+
+        for (SeriesUnit unit : _measurements)
+        {
+            exporter.write(getName(), Double.toString(unit.time/1000.0) + " ms", unit.average);
+        }
     }
-  }
 
     @Override
     public void reportReturnCode(int code) {
