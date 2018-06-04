@@ -117,7 +117,7 @@ public class MongoDbClient extends DB {
             // Set connectionpool to size of ycsb thread pool
             final String maxConnections = props.getProperty("threadcount", "100");
 
-            String writeConcernType = props.getProperty("mongodb.writeConcern", 
+            String writeConcernType = props.getProperty("mongodb.writeConcern",
                     "acknowledged").toLowerCase();
             if ("unacknowledged".equals(writeConcernType)) {
                 writeConcern = WriteConcern.UNACKNOWLEDGED;
@@ -180,7 +180,7 @@ public class MongoDbClient extends DB {
                 for (int i=0; i<server.length; i++) {
                    String url=server[i];
                    System.err.println("Found server connection string " + url);
-                   // if mongodb:// prefix is present then this is MongoClientURI format 
+                   // if mongodb:// prefix is present then this is MongoClientURI format
                    // combine with options to get MongoClient
                    if (url.startsWith("mongodb://")) {
                        MongoClientURI uri = new MongoClientURI(url, builder);
@@ -189,7 +189,7 @@ public class MongoDbClient extends DB {
                        mongo[i] = new MongoClient(new ServerAddress(url), builder.build());
                    }
                    db[i] = mongo[i].getDB(database);
-   
+
                    System.out.println("mongo connection created with " + url);
                  }
             } catch (Exception e1) {
@@ -209,9 +209,9 @@ public class MongoDbClient extends DB {
     @Override
     public void cleanup() throws DBException {
         if (initCount.decrementAndGet() <= 0) {
-             for (int i=0;i<mongo.length;i++) { 
+             for (int i=0;i<mongo.length;i++) {
                 try {
-                   mongo[i].close(); 
+                   mongo[i].close();
                } catch (Exception e1) { /* ignore */ }
             }
         }
@@ -277,7 +277,7 @@ public class MongoDbClient extends DB {
              e.printStackTrace();
              return 1;
            }
-        } 
+        }
         if (insertCount == 0) {
            bulkWriteOperation = collection.initializeUnorderedBulkOperation();
         }
@@ -291,7 +291,7 @@ public class MongoDbClient extends DB {
              if (res.getInsertedCount() == insertCount ) {
                  insertCount = 0;
                  return 0;
-             } 
+             }
              System.err.println("Number of inserted documents doesn't match the number sent, " + res.getInsertedCount() + " inserted, sent " + insertCount);
              return 1;
            }
