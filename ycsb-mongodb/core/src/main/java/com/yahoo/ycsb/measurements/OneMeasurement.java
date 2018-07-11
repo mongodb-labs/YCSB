@@ -45,6 +45,8 @@ public abstract class OneMeasurement {
 
     public abstract String getSummary();
 
+    public abstract boolean isEmpty();
+
   /**
    * Export the current measurements to a suitable format.
    *

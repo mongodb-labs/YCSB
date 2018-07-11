@@ -638,6 +638,7 @@ public class Client
 
         //set up measurements
         Measurements.setProperties(props);
+        Measurements.getMeasurements().init();
 
         //load the workload
         ClassLoader classLoader = Client.class.getClassLoader();

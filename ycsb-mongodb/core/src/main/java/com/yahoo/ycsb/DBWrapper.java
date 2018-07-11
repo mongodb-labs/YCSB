@@ -36,7 +36,7 @@ public class DBWrapper extends DB
     {
         _db=db;
         _measurements=Measurements.getMeasurements();
-        _measurements.initMeasurement("CLEANUP");
+        _measurements.init();
     }
 
     /**

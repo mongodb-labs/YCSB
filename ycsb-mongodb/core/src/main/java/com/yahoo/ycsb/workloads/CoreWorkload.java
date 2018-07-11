@@ -340,42 +340,41 @@ public class CoreWorkload extends Workload
             orderedinserts=true;
         }
 
-        Measurements meas=Measurements.getMeasurements();
         keysequence=new CounterGenerator(insertstart);
         operationchooser=new DiscreteGenerator();
         if (readproportion>0)
         {
             String op="READ";
+            System.out.println("[WORKLOAD], " + op + ", " + readproportion + "%.");
             operationchooser.addValue(readproportion,op);
-            meas.initMeasurement(op);
         }
 
         if (updateproportion>0)
         {
             String op="UPDATE";
+            System.out.println("[WORKLOAD], " + op + ", " + updateproportion + "%.");
             operationchooser.addValue(updateproportion,op);
-            meas.initMeasurement(op);
         }
 
         if (insertproportion>0)
         {
             String op="INSERT";
+            System.out.println("[WORKLOAD], " + op + ", " + insertproportion + "%.");
             operationchooser.addValue(insertproportion,op);
-            meas.initMeasurement(op);
         }
 
         if (scanproportion>0)
         {
             String op="SCAN";
+            System.out.println("[WORKLOAD], " + op + ", " + scanproportion + "%.");
             operationchooser.addValue(scanproportion,op);
-            meas.initMeasurement(op);
         }
 
         if (readmodifywriteproportion>0)
         {
             String op="READMODIFYWRITE";
+            System.out.println("[WORKLOAD], " + op + ", " + readmodifywriteproportion + "%.");
             operationchooser.addValue(readmodifywriteproportion,op);
-            meas.initMeasurement(op);
         }
 
         transactioninsertkeysequence=new CounterGenerator(recordcount);

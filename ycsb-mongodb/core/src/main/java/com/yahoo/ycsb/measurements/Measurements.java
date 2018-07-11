@@ -80,6 +80,17 @@ public class Measurements
         }
     }
 
+    public void init()
+    {
+        // Touch all normal measurements
+        initMeasurement("READ");
+        initMeasurement("UPDATE");
+        initMeasurement("INSERT");
+        initMeasurement("SCAN");
+        initMeasurement("READMODIFYWRITE");
+        initMeasurement("CLEANUP");
+    }
+
     public synchronized void initMeasurement(String op)
     {
         // If we already have a measurement, don't bother with synching
@@ -142,6 +153,9 @@ public class Measurements
     {
         for (OneMeasurement measurement : data.values())
         {
+            if(measurement.isEmpty()){
+                continue;
+            }
             measurement.exportMeasurements(exporter);
         }
     }
@@ -154,6 +168,9 @@ public class Measurements
         String ret="";
         for (OneMeasurement m : data.values())
         {
+            if(m.isEmpty()){
+                continue;
+            }
             ret+=m.getSummary()+" ";
         }
 
