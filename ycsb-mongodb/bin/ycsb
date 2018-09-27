@@ -107,9 +107,7 @@ database = sys.argv[2]
 db_classname = DATABASES[database]
 options = sys.argv[3:]
 
-keystore = "-Djavax.net.ssl.keyStore=%s" %os.path.expanduser("~/mongodb/keystore.jks")
-keystore_pass = "-Djavax.net.ssl.keyStorePassword=server-perf"
-ycsb_command = ["java", keystore, keystore_pass, "-cp", os.pathsep.join(find_jars(ycsb_home, database)), \
+ycsb_command = ["java", "-cp", os.pathsep.join(find_jars(ycsb_home, database)), \
                 COMMANDS[sys.argv[1]]["main"], "-db", db_classname] + options
 if command:
     ycsb_command.append(command)
