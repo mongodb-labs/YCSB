@@ -1,3 +1,5 @@
+# This Repository is NOT a supported MongoDB product
+
 # YCSB
 
 This is 10gen/MongoDB maintained partial YCSB repo.
