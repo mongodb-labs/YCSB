@@ -11,26 +11,40 @@
 
 package com.yahoo.ycsb.db;
 
+import java.security.SecureRandom;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.Collections;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.Vector;
-import java.util.List;
-import java.util.ArrayList;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.UUID;
 
+import com.mongodb.AutoEncryptionSettings;
 import com.mongodb.BasicDBObject;
 import com.mongodb.BulkWriteOperation;
 import com.mongodb.BulkWriteResult;
+import com.mongodb.client.MongoDatabase;
+import com.mongodb.client.MongoCollection;
+import com.mongodb.client.model.CreateCollectionOptions;
+import com.mongodb.client.model.vault.DataKeyOptions;
+import com.mongodb.client.vault.ClientEncryption;
+import com.mongodb.client.vault.ClientEncryptions;
+import com.mongodb.ClientEncryptionSettings;
+import com.mongodb.ConnectionString;
 import com.mongodb.DBCollection;
 import com.mongodb.DBCursor;
 import com.mongodb.DBObject;
-import com.mongodb.MongoClient;
-import com.mongodb.MongoClientURI;
-import com.mongodb.MongoClientOptions;
 import com.mongodb.InsertOptions;
+import com.mongodb.MongoClient;
+import com.mongodb.MongoClientOptions;
+import com.mongodb.MongoClientSettings;
+import com.mongodb.MongoClientURI;
 import com.mongodb.ReadPreference;
 import com.mongodb.ServerAddress;
 import com.mongodb.WriteConcern;
@@ -39,6 +53,27 @@ import com.yahoo.ycsb.ByteArrayByteIterator;
 import com.yahoo.ycsb.ByteIterator;
 import com.yahoo.ycsb.DB;
 import com.yahoo.ycsb.DBException;
+import org.bson.BsonBinary;
+import org.bson.BsonDocument;
+import org.bson.Document;
+
+import java.nio.ByteBuffer;
+
+class UuidUtils {
+    public static UUID asUuid(byte[] bytes) {
+      ByteBuffer bb = ByteBuffer.wrap(bytes);
+      long firstLong = bb.getLong();
+      long secondLong = bb.getLong();
+      return new UUID(firstLong, secondLong);
+    }
+
+    public static byte[] asBytes(UUID uuid) {
+      ByteBuffer bb = ByteBuffer.wrap(new byte[16]);
+      bb.putLong(uuid.getMostSignificantBits());
+      bb.putLong(uuid.getLeastSignificantBits());
+      return bb.array();
+    }
+  }
 
 /**
  * MongoDB client for YCSB framework.
@@ -88,6 +123,125 @@ public class MongoDbClient extends DB {
     /** Measure of how compressible the data is, compressibility=10 means the data can compress tenfold.
      *  The default is 1, which is uncompressible */
     private static float compressibility = (float) 1.0;
+
+    private static String generateSchema(String keyId) {
+        StringBuilder schema = new StringBuilder();
+
+        schema.append(
+            "{" +
+            "  properties: {" );
+
+        for(int i =0; i < 10; i++) {
+            schema.append(
+                "    field" + i + ": {" +
+                "      encrypt: {" +
+                "        keyId: [{" +
+                "          \"$binary\": {" +
+                "            \"base64\": \"" + keyId + "\"," +
+                "            \"subType\": \"04\"" +
+                "          }" +
+                "        }]," +
+                "        bsonType: \"binData\"," +
+                "        algorithm: \"AEAD_AES_256_CBC_HMAC_SHA_512-Random\"" +
+                "      }" +
+                "    },");
+        }
+
+        schema.append(
+            "  }," +
+            "  \"bsonType\": \"object\"" +
+            "}");
+
+        return schema.toString();
+    }
+
+    private static String generateRemoteSchema(String keyId) {
+        return "{ $jsonSchema : " + generateSchema(keyId) + "}";
+    }
+
+    private static synchronized String getDataKeyOrCreate(MongoCollection<Document> keyCollection, ClientEncryption clientEncryption ) {
+        BsonDocument findFilter = new BsonDocument();
+        Document keyDoc = keyCollection.find(findFilter).first();
+
+        String base64DataKeyId;
+        if(keyDoc == null ) {
+            BsonBinary dataKeyId = clientEncryption.createDataKey("local", new DataKeyOptions());
+            base64DataKeyId = Base64.getEncoder().encodeToString(dataKeyId.getData());
+        } else {
+            UUID dataKeyId = (UUID) keyDoc.get("_id");
+            base64DataKeyId = Base64.getEncoder().encodeToString(UuidUtils.asBytes(dataKeyId));
+        }
+
+        return base64DataKeyId;
+    }
+
+    private static AutoEncryptionSettings generateEncryptionSettings(String url, Boolean remote_schema) {
+        // Use a hard coded local key since it needs to be shared between load and run phases
+        byte[] localMasterKey = new byte[]{0x77, 0x1f, 0x2d, 0x7d, 0x76, 0x74, 0x39, 0x08, 0x50, 0x0b, 0x61, 0x14,
+            0x3a, 0x07, 0x24, 0x7c, 0x37, 0x7b, 0x60, 0x0f, 0x09, 0x11, 0x23, 0x65,
+            0x35, 0x01, 0x3a, 0x76, 0x5f, 0x3e, 0x4b, 0x6a, 0x65, 0x77, 0x21, 0x6d,
+            0x34, 0x13, 0x24, 0x1b, 0x47, 0x73, 0x21, 0x5d, 0x56, 0x6a, 0x38, 0x30,
+            0x6d, 0x5e, 0x79, 0x1b, 0x25, 0x4d, 0x2a, 0x00, 0x7c, 0x0b, 0x65, 0x1d,
+            0x70, 0x22, 0x22, 0x61, 0x2e, 0x6a, 0x52, 0x46, 0x6a, 0x43, 0x43, 0x23,
+            0x58, 0x21, 0x78, 0x59, 0x64, 0x35, 0x5c, 0x23, 0x00, 0x27, 0x43, 0x7d,
+            0x50, 0x13, 0x65, 0x3c, 0x54, 0x1e, 0x74, 0x3c, 0x3b, 0x57, 0x21, 0x1a};
+
+        Map<String, Map<String, Object>> kmsProviders =
+            Collections.singletonMap("local", Collections.singletonMap("key", (Object)localMasterKey));
+
+        // Use the same database, admin is slow
+        String keyVaultNamespace = database + ".datakeys";
+        String keyVaultUrls = url;
+        if (!keyVaultUrls.startsWith("mongodb")) {
+            keyVaultUrls = "mongodb://" + keyVaultUrls;
+        }
+
+        ClientEncryptionSettings clientEncryptionSettings = ClientEncryptionSettings.builder()
+        .keyVaultMongoClientSettings(MongoClientSettings.builder()
+                .applyConnectionString(new ConnectionString(keyVaultUrls))
+                .readPreference(readPreference)
+                .writeConcern(writeConcern)
+                .build())
+        .keyVaultNamespace(keyVaultNamespace)
+        .kmsProviders(kmsProviders)
+        .build();
+
+        ClientEncryption clientEncryption = ClientEncryptions.create(clientEncryptionSettings);
+
+        MongoClient vaultClient = new MongoClient( new MongoClientURI(keyVaultUrls) );
+
+        final MongoCollection<Document> keyCollection = vaultClient.getDatabase(database).getCollection(keyVaultNamespace);
+
+        String base64DataKeyId = getDataKeyOrCreate(keyCollection, clientEncryption);
+
+        String collName = "usertable";
+        AutoEncryptionSettings.Builder autoEncryptionSettingsBuilder = AutoEncryptionSettings.builder()
+            .keyVaultNamespace(keyVaultNamespace)
+            .extraOptions(Collections.singletonMap("mongocryptdBypassSpawn", (Object)true) )
+            .kmsProviders(kmsProviders);
+
+        if (!remote_schema) {
+            autoEncryptionSettingsBuilder.schemaMap(Collections.singletonMap(database + "." + collName,
+                // Need a schema that references the new data key
+                BsonDocument.parse(generateSchema(base64DataKeyId))
+                ));
+        }
+
+        AutoEncryptionSettings autoEncryptionSettings = autoEncryptionSettingsBuilder.build();
+
+        if (remote_schema) {
+            com.mongodb.client.MongoClient client = com.mongodb.client.MongoClients.create(keyVaultUrls);
+            CreateCollectionOptions options = new CreateCollectionOptions();
+            options.getValidationOptions().validator(BsonDocument.parse(generateRemoteSchema(base64DataKeyId)));
+            try {
+                client.getDatabase(database).createCollection(collName,  options);
+            } catch (com.mongodb.MongoCommandException e) {
+                // ignore
+            }
+        }
+
+        return autoEncryptionSettings;
+    }
 
     /**
      * Initialize any state for this DB.
@@ -166,13 +320,26 @@ public class MongoDbClient extends DB {
                 System.exit(1);
             }
 
-            try {
+            boolean use_encryption = Boolean.parseBoolean(props.getProperty("mongodb.fle", "false"));
+            boolean remote_schema = Boolean.parseBoolean(props.getProperty("mongodb.remote_schema", "false"));
 
+            AutoEncryptionSettings autoEncryptionSettings = generateEncryptionSettings(urls, remote_schema);
+
+            try {
                 MongoClientOptions.Builder builder = new MongoClientOptions.Builder();
                 builder.cursorFinalizerEnabled(false);
-                builder.connectionsPerHost(Integer.parseInt(maxConnections));
+                // Need to use a larger connection pool to talk to mongocryptd/keyvault
+                if (use_encryption) {
+                    builder.connectionsPerHost(Integer.parseInt(maxConnections) * 3);
+                } else {
+                    builder.connectionsPerHost(Integer.parseInt(maxConnections));
+                }
                 builder.writeConcern(writeConcern);
                 builder.readPreference(readPreference);
+
+                if (use_encryption) {
+                    builder.autoEncryptionSettings(autoEncryptionSettings);
+                }
 
                 String[] server = urls.split("\\|"); // split on the "|" character
                 mongo = new MongoClient[server.length];
