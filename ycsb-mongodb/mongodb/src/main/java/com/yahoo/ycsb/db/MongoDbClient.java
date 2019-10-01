@@ -124,6 +124,8 @@ public class MongoDbClient extends DB {
      *  The default is 1, which is uncompressible */
     private static float compressibility = (float) 1.0;
 
+    private static String datatype = "binData";
+
     private static String generateSchema(String keyId) {
         StringBuilder schema = new StringBuilder();
 
@@ -141,7 +143,7 @@ public class MongoDbClient extends DB {
                 "            \"subType\": \"04\"" +
                 "          }" +
                 "        }]," +
-                "        bsonType: \"binData\"," +
+                "        bsonType: \"" + datatype  +  "\"," +
                 "        algorithm: \"AEAD_AES_256_CBC_HMAC_SHA_512-Random\"" +
                 "      }" +
                 "    },");
@@ -220,12 +222,10 @@ public class MongoDbClient extends DB {
             .extraOptions(Collections.singletonMap("mongocryptdBypassSpawn", (Object)true) )
             .kmsProviders(kmsProviders);
 
-        if (!remote_schema) {
-            autoEncryptionSettingsBuilder.schemaMap(Collections.singletonMap(database + "." + collName,
-                // Need a schema that references the new data key
-                BsonDocument.parse(generateSchema(base64DataKeyId))
-                ));
-        }
+        autoEncryptionSettingsBuilder.schemaMap(Collections.singletonMap(database + "." + collName,
+            // Need a schema that references the new data key
+            BsonDocument.parse(generateSchema(base64DataKeyId))
+        ));
 
         AutoEncryptionSettings autoEncryptionSettings = autoEncryptionSettingsBuilder.build();
 
@@ -236,7 +236,10 @@ public class MongoDbClient extends DB {
             try {
                 client.getDatabase(database).createCollection(collName,  options);
             } catch (com.mongodb.MongoCommandException e) {
-                // ignore
+                System.err.println("ERROR: Failed to create collection " + collName + " with error "
+                         + e.toString());
+                e.printStackTrace();
+                System.exit(1);
             }
         }
 
@@ -264,6 +267,10 @@ public class MongoDbClient extends DB {
             // Set insert batchsize, default 1 - to be YCSB-original equivalent
             final String batchSizeString = props.getProperty("batchsize", "1");
             BATCHSIZE = Integer.parseInt(batchSizeString);
+
+            // allow "string" in addition to "byte" array for data type
+            final String datatypeString = props.getProperty("datatype","binData");
+            this.datatype = datatypeString;
 
             final String compressibilityString = props.getProperty("compressibility", "1");
             this.compressibility = Float.parseFloat(compressibilityString);
@@ -320,10 +327,9 @@ public class MongoDbClient extends DB {
                 System.exit(1);
             }
 
+            // encryption - FLE
             boolean use_encryption = Boolean.parseBoolean(props.getProperty("mongodb.fle", "false"));
             boolean remote_schema = Boolean.parseBoolean(props.getProperty("mongodb.remote_schema", "false"));
-
-            AutoEncryptionSettings autoEncryptionSettings = generateEncryptionSettings(urls, remote_schema);
 
             try {
                 MongoClientOptions.Builder builder = new MongoClientOptions.Builder();
@@ -338,6 +344,7 @@ public class MongoDbClient extends DB {
                 builder.readPreference(readPreference);
 
                 if (use_encryption) {
+                    AutoEncryptionSettings autoEncryptionSettings = generateEncryptionSettings(urls, remote_schema);
                     builder.autoEncryptionSettings(autoEncryptionSettings);
                 }
 
@@ -390,7 +397,7 @@ public class MongoDbClient extends DB {
         long random_string_length = (int) Math.round(string_length /compressibility);
         long compressible_len = string_length - random_string_length;
         for(int i=0;i<compressible_len;i++)
-            data[i] = 0;
+            data[i] = 97;
         return data;
     }
 
@@ -432,7 +439,11 @@ public class MongoDbClient extends DB {
         DBObject r = new BasicDBObject().append("_id", key);
         for (String k : values.keySet()) {
             byte[] data = values.get(k).toArray();
-            r.put(k,applyCompressibility(data));
+            if (this.datatype.equals("string")) {
+                r.put(k, new String(applyCompressibility(data)));
+            } else {
+                r.put(k,applyCompressibility(data));
+            }
         }
         if (BATCHSIZE == 1 ) {
            try {
@@ -535,7 +546,11 @@ public class MongoDbClient extends DB {
             while (keys.hasNext()) {
                 String tmpKey = keys.next();
                 byte[] data = values.get(tmpKey).toArray();
-                fieldsToSet.put(tmpKey, applyCompressibility(data));
+                if (this.datatype.equals("string")) {
+                    fieldsToSet.put(tmpKey, new String(applyCompressibility(data)));
+                } else {
+                    fieldsToSet.put(tmpKey, applyCompressibility(data));
+                }
             }
             u.put("$set", fieldsToSet);
             WriteResult res = collection.update(q, u);
