@@ -126,14 +126,14 @@ public class MongoDbClient extends DB {
 
     private static String datatype = "binData";
 
-    private static String generateSchema(String keyId) {
+    private static String generateSchema(String keyId, int numFields) {
         StringBuilder schema = new StringBuilder();
 
         schema.append(
             "{" +
             "  properties: {" );
 
-        for(int i =0; i < 10; i++) {
+        for(int i =0; i < numFields; i++) {
             schema.append(
                 "    field" + i + ": {" +
                 "      encrypt: {" +
@@ -157,8 +157,8 @@ public class MongoDbClient extends DB {
         return schema.toString();
     }
 
-    private static String generateRemoteSchema(String keyId) {
-        return "{ $jsonSchema : " + generateSchema(keyId) + "}";
+    private static String generateRemoteSchema(String keyId, int numFields) {
+        return "{ $jsonSchema : " + generateSchema(keyId, numFields) + "}";
     }
 
     private static synchronized String getDataKeyOrCreate(MongoCollection<Document> keyCollection, ClientEncryption clientEncryption ) {
@@ -177,7 +177,7 @@ public class MongoDbClient extends DB {
         return base64DataKeyId;
     }
 
-    private static AutoEncryptionSettings generateEncryptionSettings(String url, Boolean remote_schema) {
+    private static AutoEncryptionSettings generateEncryptionSettings(String url, Boolean remote_schema, int numFields) {
         // Use a hard coded local key since it needs to be shared between load and run phases
         byte[] localMasterKey = new byte[]{0x77, 0x1f, 0x2d, 0x7d, 0x76, 0x74, 0x39, 0x08, 0x50, 0x0b, 0x61, 0x14,
             0x3a, 0x07, 0x24, 0x7c, 0x37, 0x7b, 0x60, 0x0f, 0x09, 0x11, 0x23, 0x65,
@@ -224,7 +224,7 @@ public class MongoDbClient extends DB {
 
         autoEncryptionSettingsBuilder.schemaMap(Collections.singletonMap(database + "." + collName,
             // Need a schema that references the new data key
-            BsonDocument.parse(generateSchema(base64DataKeyId))
+            BsonDocument.parse(generateSchema(base64DataKeyId, numFields))
         ));
 
         AutoEncryptionSettings autoEncryptionSettings = autoEncryptionSettingsBuilder.build();
@@ -232,7 +232,7 @@ public class MongoDbClient extends DB {
         if (remote_schema) {
             com.mongodb.client.MongoClient client = com.mongodb.client.MongoClients.create(keyVaultUrls);
             CreateCollectionOptions options = new CreateCollectionOptions();
-            options.getValidationOptions().validator(BsonDocument.parse(generateRemoteSchema(base64DataKeyId)));
+            options.getValidationOptions().validator(BsonDocument.parse(generateRemoteSchema(base64DataKeyId, numFields)));
             try {
                 client.getDatabase(database).createCollection(collName,  options);
             } catch (com.mongodb.MongoCommandException e) {
@@ -330,6 +330,7 @@ public class MongoDbClient extends DB {
             // encryption - FLE
             boolean use_encryption = Boolean.parseBoolean(props.getProperty("mongodb.fle", "false"));
             boolean remote_schema = Boolean.parseBoolean(props.getProperty("mongodb.remote_schema", "false"));
+            int numEncryptFields = Integer.parseInt(props.getProperty("mongodb.numFleFields", "10"));
 
             try {
                 MongoClientOptions.Builder builder = new MongoClientOptions.Builder();
@@ -344,7 +345,7 @@ public class MongoDbClient extends DB {
                 builder.readPreference(readPreference);
 
                 if (use_encryption) {
-                    AutoEncryptionSettings autoEncryptionSettings = generateEncryptionSettings(urls, remote_schema);
+                    AutoEncryptionSettings autoEncryptionSettings = generateEncryptionSettings(urls, remote_schema, numEncryptFields);
                     builder.autoEncryptionSettings(autoEncryptionSettings);
                 }
 
@@ -356,7 +357,7 @@ public class MongoDbClient extends DB {
                    System.err.println("Found server connection string " + url);
                    // if mongodb:// prefix is present then this is MongoClientURI format
                    // combine with options to get MongoClient
-                   if (url.startsWith("mongodb://")) {
+                   if (url.startsWith("mongodb://") || url.startsWith("mongodb+srv://") ) {
                        MongoClientURI uri = new MongoClientURI(url, builder);
                        mongo[i] = new MongoClient(uri);
                    } else {
