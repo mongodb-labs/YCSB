@@ -115,6 +115,10 @@ public class MongoDbClient extends DB {
     /** The database to access. */
     private static String database;
 
+    /** Credentials */
+    private static String username;
+    private static String password;
+
     /** Count the number of times initialized to teardown on the last {@link #cleanup()}. */
     private static final AtomicInteger initCount = new AtomicInteger(0);
 
@@ -260,9 +264,11 @@ public class MongoDbClient extends DB {
 
             // initialize MongoDb driver
             Properties props = getProperties();
-            String urls = props.getProperty("mongodb.url", "localhost:27017");
+            String urls = props.getProperty("mongodb.url", "mongodb://localhost:27017");
 
             database = props.getProperty("mongodb.database", "ycsb");
+            username = props.getProperty("mongodb.username", "");
+            password = props.getProperty("mongodb.password", "");
 
             // Set insert batchsize, default 1 - to be YCSB-original equivalent
             final String batchSizeString = props.getProperty("batchsize", "1");
@@ -344,35 +350,40 @@ public class MongoDbClient extends DB {
                 builder.writeConcern(writeConcern);
                 builder.readPreference(readPreference);
 
-                if (use_encryption) {
-                    AutoEncryptionSettings autoEncryptionSettings = generateEncryptionSettings(urls, remote_schema, numEncryptFields);
-                    builder.autoEncryptionSettings(autoEncryptionSettings);
-                }
+                String userPassword = username.equals("") ? "" : username + (password.equals("") ? "" : ":" + password) + "@";
 
                 String[] server = urls.split("\\|"); // split on the "|" character
                 mongo = new MongoClient[server.length];
                 db = new com.mongodb.DB[server.length];
+
                 for (int i=0; i<server.length; i++) {
-                   String url=server[i];
-                   System.err.println("Found server connection string " + url);
+                   String url= userPassword.equals("") ? server[i] : server[i].replace("://","://"+userPassword);
+                   if ( i==0 && use_encryption) {
+                       AutoEncryptionSettings autoEncryptionSettings = generateEncryptionSettings(url, remote_schema, numEncryptFields);
+                       builder.autoEncryptionSettings(autoEncryptionSettings);
+                   }
+
                    // if mongodb:// prefix is present then this is MongoClientURI format
                    // combine with options to get MongoClient
                    if (url.startsWith("mongodb://") || url.startsWith("mongodb+srv://") ) {
                        MongoClientURI uri = new MongoClientURI(url, builder);
                        mongo[i] = new MongoClient(uri);
+
+                       String dispURI = String.valueOf(uri.getPassword()).equals("") ? uri.toString() : uri.toString().replace(":"+String.valueOf(uri.getPassword()),":XXXXXX");
+                       System.out.println("DEBUG mongo connection created to " + dispURI);
                    } else {
                        mongo[i] = new MongoClient(new ServerAddress(url), builder.build());
+                       System.out.println("DEBUG mongo server connection to " + mongo[i].toString());
                    }
                    db[i] = mongo[i].getDB(database);
 
-                   System.out.println("mongo connection created with " + url);
                  }
             } catch (Exception e1) {
                 System.err
                         .println("Could not initialize MongoDB connection pool for Loader: "
                                 + e1.toString());
                 e1.printStackTrace();
-                return;
+                System.exit(1);
             }
         }
     }
