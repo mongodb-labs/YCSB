@@ -130,6 +130,8 @@ public class MongoDbClient extends DB {
 
     private static String datatype = "binData";
 
+    private static String algorithm = "AEAD_AES_256_CBC_HMAC_SHA_512-Random";
+
     private static String generateSchema(String keyId, int numFields) {
         StringBuilder schema = new StringBuilder();
 
@@ -148,7 +150,7 @@ public class MongoDbClient extends DB {
                 "          }" +
                 "        }]," +
                 "        bsonType: \"" + datatype  +  "\"," +
-                "        algorithm: \"AEAD_AES_256_CBC_HMAC_SHA_512-Random\"" +
+                "        algorithm: \"" + algorithm + "\"" +
                 "      }" +
                 "    },");
         }
@@ -240,10 +242,16 @@ public class MongoDbClient extends DB {
             try {
                 client.getDatabase(database).createCollection(collName,  options);
             } catch (com.mongodb.MongoCommandException e) {
-                System.err.println("ERROR: Failed to create collection " + collName + " with error "
+                // if this is load phase, then should error, if it's run then should ignore
+                // how to tell properly?
+                if (client.getDatabase(database).getCollection(collName).count() > 0) {
+                   // ignore
+                } else {
+                   System.err.println("ERROR: Failed to create collection " + collName + " with error "
                          + e.toString());
-                e.printStackTrace();
-                System.exit(1);
+                   e.printStackTrace();
+                   System.exit(1);
+                }
             }
         }
 
