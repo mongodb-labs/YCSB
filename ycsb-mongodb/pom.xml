@@ -32,14 +32,14 @@
     <dependency>
       <groupId>org.mongodb</groupId>
       <artifactId>mongodb-crypt</artifactId>
-      <version>1.0.0-beta5</version>
+      <version>1.0.1</version>
     </dependency>
   </dependencies>
 
   <!-- Properties Management -->
   <properties>
     <maven.assembly.version>2.2.1</maven.assembly.version>
-    <mongodb.version>3.11.0</mongodb.version>
+    <mongodb.version>4.1.1</mongodb.version>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
   </properties>
 
