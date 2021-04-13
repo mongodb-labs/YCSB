@@ -32,14 +32,20 @@
     <dependency>
       <groupId>org.mongodb</groupId>
       <artifactId>mongodb-crypt</artifactId>
-      <version>1.0.1</version>
+      <version>1.2.0</version>
+    </dependency>
+    <!-- mongodb-crypt is pulling in a SNAPSHOT release of bson, so to work around that pin the bson library explicitly -->
+    <dependency>
+      <groupId>org.mongodb</groupId>
+      <artifactId>bson</artifactId>
+      <version>${mongodb.version}</version>
     </dependency>
   </dependencies>
 
   <!-- Properties Management -->
   <properties>
     <maven.assembly.version>2.2.1</maven.assembly.version>
-    <mongodb.version>3.12.7</mongodb.version>
+    <mongodb.version>4.2.3</mongodb.version>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
   </properties>
 
@@ -56,8 +62,8 @@
         <artifactId>maven-compiler-plugin</artifactId>
         <version>2.3.2</version>
         <configuration>
-          <source>1.6</source>
-          <target>1.6</target>
+          <source>1.8</source>
+          <target>1.8</target>
         </configuration>
       </plugin>
     </plugins>
