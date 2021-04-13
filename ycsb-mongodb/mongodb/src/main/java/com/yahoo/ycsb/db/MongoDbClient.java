@@ -12,10 +12,8 @@
 package com.yahoo.ycsb.db;
 
 import com.mongodb.AutoEncryptionSettings;
-import com.mongodb.BasicDBObject;
 import com.mongodb.ClientEncryptionSettings;
 import com.mongodb.ConnectionString;
-import com.mongodb.DBObject;
 import com.mongodb.MongoClientSettings;
 import com.mongodb.ReadPreference;
 import com.mongodb.ServerAddress;
@@ -42,6 +40,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -94,7 +93,7 @@ public class MongoDbClient extends DB {
 
     /** Allow inserting batches to save time during load */
     private static Integer BATCHSIZE;
-    private List<DBObject> insertList = null;
+    private List<Document> insertList = null;
     private Integer insertCount = 0;
 
     /** The database to access. */
@@ -147,7 +146,7 @@ public class MongoDbClient extends DB {
     }
 
     private static synchronized String getDataKeyOrCreate(MongoCollection<Document> keyCollection, ClientEncryption clientEncryption ) {
-        BsonDocument findFilter = new BsonDocument();
+        Document findFilter = new Document();
         Document keyDoc = keyCollection.find(findFilter).first();
 
         String base64DataKeyId;
@@ -410,8 +409,8 @@ public class MongoDbClient extends DB {
     @Override
     public int delete(String table, String key) {
         try {
-            MongoCollection<DBObject> collection = db[serverCounter++%db.length].getCollection(table, DBObject.class);
-            BasicDBObject q = new BasicDBObject().append("_id", key);
+            MongoCollection<Document> collection = db[serverCounter++%db.length].getCollection(table);
+            Document q = new Document("_id", key);
             collection.deleteMany(q);
             return 0;
         }
@@ -434,8 +433,8 @@ public class MongoDbClient extends DB {
     @Override
     public int insert(String table, String key,
             HashMap<String, ByteIterator> values) {
-        MongoCollection<DBObject> collection = db[serverCounter++%db.length].getCollection(table, DBObject.class);
-        DBObject r = new BasicDBObject().append("_id", key);
+        MongoCollection<Document> collection = db[serverCounter++%db.length].getCollection(table);
+        Document r = new Document("_id", key);
         for (String k : values.keySet()) {
             byte[] data = values.get(k).toArray();
             if (datatype.equals("string")) {
@@ -486,17 +485,17 @@ public class MongoDbClient extends DB {
      * @return Zero on success, a non-zero error code on error or "not found".
      */
     @Override
-    @SuppressWarnings("unchecked")
+    @SuppressWarnings({"unchecked", "rawtypes"})
     public int read(String table, String key, Set<String> fields,
             HashMap<String, ByteIterator> result) {
         try {
-            MongoCollection<DBObject> collection = db[serverCounter++%db.length].getCollection(table, DBObject.class);
-            BasicDBObject q = new BasicDBObject().append("_id", key);
-            BasicDBObject fieldsToReturn;
+            MongoCollection<Document> collection = db[serverCounter++%db.length].getCollection(table);
+            Document q = new Document("_id", key);
+            Document fieldsToReturn;
 
-            DBObject queryResult;
+            Document queryResult;
             if (fields != null) {
-                fieldsToReturn = new BasicDBObject();
+                fieldsToReturn = new Document();
                 for (final String field : fields) {
                     fieldsToReturn.put(field, INCLUDE);
                 }
@@ -507,7 +506,9 @@ public class MongoDbClient extends DB {
             }
 
             if (queryResult != null) {
-                result.putAll(queryResult.toMap());
+                // TODO: this is wrong.  It is totally violating the expected type of the values in result, which is ByteIterator
+                // TODO: somewhere up the chain this should be resulting in a ClassCastException
+                result.putAll(new LinkedHashMap(queryResult));
                 return 0;
             }
             System.err.println("No results returned for key " + key);
@@ -532,10 +533,10 @@ public class MongoDbClient extends DB {
     public int update(String table, String key,
             HashMap<String, ByteIterator> values) {
         try {
-            MongoCollection<DBObject> collection = db[serverCounter++%db.length].getCollection(table, DBObject.class);
-            BasicDBObject q = new BasicDBObject().append("_id", key);
-            BasicDBObject u = new BasicDBObject();
-            BasicDBObject fieldsToSet = new BasicDBObject();
+            MongoCollection<Document> collection = db[serverCounter++%db.length].getCollection(table);
+            Document q = new Document("_id", key);
+            Document u = new Document();
+            Document fieldsToSet = new Document();
             for (String tmpKey : values.keySet()) {
                 byte[] data = values.get(tmpKey).toArray();
                 if (datatype.equals("string")) {
@@ -571,16 +572,16 @@ public class MongoDbClient extends DB {
     @Override
     public int scan(String table, String startkey, int recordcount,
             Set<String> fields, Vector<HashMap<String, ByteIterator>> result) {
-        MongoCursor<DBObject> cursor = null;
+        MongoCursor<Document> cursor = null;
         try {
-            MongoCollection<DBObject> collection = db[serverCounter++%db.length].getCollection(table, DBObject.class);
-            BasicDBObject fieldsToReturn = null;
+            MongoCollection<Document> collection = db[serverCounter++%db.length].getCollection(table);
+            Document fieldsToReturn = null;
             // { "_id":{"$gte":startKey, "$lte":{"appId":key+"\uFFFF"}} }
-            BasicDBObject scanRange = new BasicDBObject().append("$gte", startkey);
-            BasicDBObject q = new BasicDBObject().append("_id", scanRange);
-            BasicDBObject s = new BasicDBObject().append("_id",INCLUDE);
+            Document scanRange = new Document("$gte", startkey);
+            Document q = new Document("_id", scanRange);
+            Document s = new Document("_id",INCLUDE);
             if (fields != null) {
-                fieldsToReturn = new BasicDBObject();
+                fieldsToReturn = new Document();
                 for (final String field : fields) {
                     fieldsToReturn.put(field, INCLUDE);
                 }
@@ -595,7 +596,7 @@ public class MongoDbClient extends DB {
                 // Map<String,String>. Hence, the suppress warnings.
                 HashMap<String, ByteIterator> resultMap = new HashMap<>();
 
-                DBObject obj = cursor.next();
+                Document obj = cursor.next();
                 fillMap(resultMap, obj);
 
                 result.add(resultMap);
@@ -618,13 +619,11 @@ public class MongoDbClient extends DB {
     /**
      * TODO - Finish
      *
-     * @param resultMap resultMap
-     * @param obj dbObject
+     * @param resultMap result map
+     * @param document source document
      */
-    @SuppressWarnings("unchecked")
-    protected void fillMap(HashMap<String, ByteIterator> resultMap, DBObject obj) {
-        Map<String, Object> objMap = obj.toMap();
-        for (Map.Entry<String, Object> entry : objMap.entrySet()) {
+    protected void fillMap(HashMap<String, ByteIterator> resultMap, Document document) {
+        for (Map.Entry<String, Object> entry : document.entrySet()) {
             if (entry.getValue() instanceof byte[]) {
                 resultMap.put(entry.getKey(), new ByteArrayByteIterator(
                         (byte[]) entry.getValue()));
