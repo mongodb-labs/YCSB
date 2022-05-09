@@ -145,19 +145,19 @@ public class MongoDbClient extends DB {
         return "{ $jsonSchema : " + generateSchema(keyId, numFields) + "}";
     }
 
-    private static synchronized String getDataKeyOrCreate(MongoCollection<Document> keyCollection, ClientEncryption clientEncryption ) {
-        Document findFilter = new Document();
-        Document keyDoc = keyCollection.find(findFilter).first();
-
+    private static synchronized String getDataKeyOrCreate(MongoCollection<BsonDocument> keyCollection, ClientEncryption clientEncryption ) {
+        BsonDocument findFilter = new BsonDocument();
+        BsonDocument keyDoc = keyCollection.find(findFilter).first();
+ 
         String base64DataKeyId;
-        if(keyDoc == null ) {
+        if (keyDoc == null ) {
             BsonBinary dataKeyId = clientEncryption.createDataKey("local", new DataKeyOptions());
             base64DataKeyId = Base64.getEncoder().encodeToString(dataKeyId.getData());
         } else {
-            UUID dataKeyId = (UUID) keyDoc.get("_id");
+            UUID dataKeyId = keyDoc.getBinary("_id").asUuid();
             base64DataKeyId = Base64.getEncoder().encodeToString(UuidUtils.asBytes(dataKeyId));
         }
-
+ 
         return base64DataKeyId;
     }
 
@@ -196,7 +196,7 @@ public class MongoDbClient extends DB {
 
         MongoClient vaultClient = MongoClients.create(keyVaultUrls);
 
-        final MongoCollection<Document> keyCollection = vaultClient.getDatabase(database).getCollection(keyVaultNamespace);
+        final MongoCollection<BsonDocument> keyCollection = vaultClient.getDatabase(database).getCollection(keyVaultNamespace, BsonDocument.class);
 
         String base64DataKeyId = getDataKeyOrCreate(keyCollection, clientEncryption);
 
