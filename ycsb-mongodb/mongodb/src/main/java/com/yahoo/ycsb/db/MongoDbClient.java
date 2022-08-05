@@ -31,9 +31,11 @@ import com.mongodb.client.vault.ClientEncryptions;
 import com.yahoo.ycsb.ByteArrayByteIterator;
 import com.yahoo.ycsb.ByteIterator;
 import com.yahoo.ycsb.DB;
+import com.yahoo.ycsb.generator.DiscreteGenerator;
 import org.bson.BsonBinary;
 import org.bson.BsonDocument;
 import org.bson.Document;
+import org.bson.codecs.configuration.CodecRegistry;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -48,6 +50,9 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.Vector;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.bson.*;
+
+import java.util.Arrays;
 
 class UuidUtils {
 
@@ -81,7 +86,7 @@ public class MongoDbClient extends DB {
     /** A singleton MongoClient instance. */
     private static MongoClient[] mongo;
 
-    private static MongoDatabase[] db;                               
+    private static MongoDatabase[] db;
 
     private static int serverCounter = 0;
 
@@ -109,6 +114,19 @@ public class MongoDbClient extends DB {
     private static String datatype = "binData";
 
     private static final String algorithm = "AEAD_AES_256_CBC_HMAC_SHA_512-Random";
+
+    private static boolean isSharded = false;
+
+    enum Encryption {
+        UNENCRYPTED,
+        FLE,
+        QUERYABLE,
+    }
+
+    private static Encryption encryptionType = Encryption.UNENCRYPTED;
+    private static ArrayList<Long> contentionFactors;
+    private static HashMap<String, DiscreteGenerator> discreteFields;
+
 
     private static String generateSchema(String keyId, int numFields) {
         StringBuilder schema = new StringBuilder();
@@ -145,20 +163,61 @@ public class MongoDbClient extends DB {
         return "{ $jsonSchema : " + generateSchema(keyId, numFields) + "}";
     }
 
-    private static synchronized String getDataKeyOrCreate(MongoCollection<BsonDocument> keyCollection, ClientEncryption clientEncryption ) {
+    private static Document generateEncryptedFieldsDocument(MongoCollection<BsonDocument> keyCollection,
+            ClientEncryption clientEncryption, int numFields) {
+        ArrayList<Document> fields = new ArrayList<Document>();
+        for (int i = 0; i < numFields; i++) {
+            UUID dataKeyId = getDataKeyOrCreateUUID(keyCollection, clientEncryption);
+            Document queries = new Document("queryType", "equality");
+            if (contentionFactors != null && contentionFactors.get(i) > -1) {
+                queries.append("contention", contentionFactors.get(i));
+            }
+            fields.add(new Document("path", "field" + i)
+                        .append("keyId", dataKeyId)
+                        .append("bsonType", datatype)
+                        .append("queries", Arrays.asList(queries)));
+        }
+        return new Document("fields", fields);
+    }
+
+    private static synchronized UUID getDataKeyOrCreateUUID(MongoCollection<BsonDocument> keyCollection,
+        ClientEncryption clientEncryption) {
         BsonDocument findFilter = new BsonDocument();
         BsonDocument keyDoc = keyCollection.find(findFilter).first();
- 
-        String base64DataKeyId;
-        if (keyDoc == null ) {
+        if (keyDoc == null) {
             BsonBinary dataKeyId = clientEncryption.createDataKey("local", new DataKeyOptions());
-            base64DataKeyId = Base64.getEncoder().encodeToString(dataKeyId.getData());
+            return dataKeyId.asUuid();
         } else {
-            UUID dataKeyId = keyDoc.getBinary("_id").asUuid();
-            base64DataKeyId = Base64.getEncoder().encodeToString(UuidUtils.asBytes(dataKeyId));
+            return keyDoc.getBinary("_id").asUuid();
         }
- 
-        return base64DataKeyId;
+    }
+
+    private static synchronized String getDataKeyOrCreate(MongoCollection<BsonDocument> keyCollection,
+        ClientEncryption clientEncryption) {
+        UUID dataKeyId = getDataKeyOrCreateUUID(keyCollection, clientEncryption);
+        return Base64.getEncoder().encodeToString(UuidUtils.asBytes(dataKeyId));
+    }
+
+    private static byte[] overrideDataIfDiscrete(String key, byte[] data) {
+        if (discreteFields != null) {
+            // override the data with a value from discrete set
+            // generator.nextString() is read-only with a thread-local random number
+            // generator, so there's no need to synchronize this function.
+            DiscreteGenerator generator = discreteFields.get(key);
+            if (generator != null) {
+                byte[] discrete = generator.nextString().getBytes();
+
+                if (discrete.length >= data.length) {
+                    // do not truncate if discrete value is longer than desired length
+                    return discrete;
+                }
+
+                // extend & pad to desired length
+                data = Arrays.copyOf(discrete, data.length);
+                Arrays.fill(data, discrete.length, data.length, (byte)'x');
+            }
+        }
+        return data;
     }
 
     private static AutoEncryptionSettings generateEncryptionSettings(String url, Boolean remote_schema, int numFields) {
@@ -194,7 +253,11 @@ public class MongoDbClient extends DB {
 
         ClientEncryption clientEncryption = ClientEncryptions.create(clientEncryptionSettings);
 
-        MongoClient vaultClient = MongoClients.create(keyVaultUrls);
+        MongoClientSettings clientSettings = MongoClientSettings.builder()
+                .applyConnectionString(new ConnectionString(keyVaultUrls))
+                .uuidRepresentation(UuidRepresentation.STANDARD).build();
+
+        MongoClient vaultClient = MongoClients.create(clientSettings);
 
         final MongoCollection<BsonDocument> keyCollection = vaultClient.getDatabase(database).getCollection(keyVaultNamespace, BsonDocument.class);
 
@@ -206,12 +269,60 @@ public class MongoDbClient extends DB {
             .extraOptions(Collections.singletonMap("mongocryptdBypassSpawn", true) )
             .kmsProviders(kmsProviders);
 
-        autoEncryptionSettingsBuilder.schemaMap(Collections.singletonMap(database + "." + collName,
-            // Need a schema that references the new data key
-            BsonDocument.parse(generateSchema(base64DataKeyId, numFields))
-        ));
+        if (encryptionType == Encryption.FLE) {
+            autoEncryptionSettingsBuilder.schemaMap(Collections.singletonMap(database + "." + collName,
+                // Need a schema that references the new data key
+                BsonDocument.parse(generateSchema(base64DataKeyId, numFields))));
+        }
 
         AutoEncryptionSettings autoEncryptionSettings = autoEncryptionSettingsBuilder.build();
+
+        if (encryptionType == Encryption.QUERYABLE) {
+            com.mongodb.client.MongoClient client = com.mongodb.client.MongoClients.create(clientSettings);
+            CodecRegistry codec = client.getDatabase(database).getCodecRegistry();
+
+            MongoCursor<String> collections = client.getDatabase(database).listCollectionNames().iterator();
+            boolean hasColl = false;
+            while (collections.hasNext()) {
+                String c = collections.next();
+                if (c.equals(collName)) {
+                    hasColl = true;
+                }
+            }
+
+            if (!hasColl) {
+                BsonDocument createEDCCommand = new BsonDocument("create", new BsonString(collName));
+                createEDCCommand.append("encryptedFields",
+                        generateEncryptedFieldsDocument(keyCollection, clientEncryption, numFields)
+                                .toBsonDocument(null, codec));
+                client.getDatabase(database).runCommand(createEDCCommand);
+
+                if (isSharded) {
+                    BsonDocument enableShardingCmd = new BsonDocument("enableSharding", new BsonString(database));
+                    client.getDatabase("admin").runCommand(enableShardingCmd);
+
+                    BsonDocument shardCollCmd = new BsonDocument("shardCollection", new BsonString(database + "." + collName))
+                        .append("key", new Document("_id", "hashed").toBsonDocument());
+                    client.getDatabase("admin").runCommand(shardCollCmd);
+                }
+
+                client.getDatabase(database).getCollection(collName)
+                    .createIndex(new Document("__safeContent__", 1).toBsonDocument());
+
+                String collectionNames[] = {"esc", "ecc", "ecoc"};
+
+                for (String name : collectionNames) {
+                    String stateCollName = "enxcol_." + collName + "." + name;
+                    BsonDocument command = new BsonDocument("create", new BsonString(stateCollName));
+                    command.append("clusteredIndex",
+                        new Document("key",
+                            new Document("_id", 1)).append("unique", true)
+                            .toBsonDocument());
+                    client.getDatabase(database).runCommand(command);
+                }
+            }
+            return autoEncryptionSettings;
+        }
 
         if (remote_schema) {
             com.mongodb.client.MongoClient client = com.mongodb.client.MongoClients.create(keyVaultUrls);
@@ -231,6 +342,47 @@ public class MongoDbClient extends DB {
         }
 
         return autoEncryptionSettings;
+    }
+
+    private static ArrayList<Long> parseCommaSeparatedIntegers(String toParse, int outputListSize, long defaultValue) {
+        if (toParse.trim().isEmpty()) {
+            return null;
+        }
+        String[] values = toParse.split(",", -1);
+
+        if (outputListSize < 0) {
+            outputListSize = values.length;
+        }
+        ArrayList<Long> parsedValues = new ArrayList<Long>(Collections.nCopies(outputListSize, defaultValue));
+        int limit = Math.min(values.length, outputListSize);
+        for (int i = 0; i < limit; i++) {
+            String v = values[i].trim();
+            parsedValues.set(i, v.isEmpty() ? defaultValue : Long.parseLong(v));
+        }
+        return parsedValues;
+    }
+
+    private static HashMap<String, DiscreteGenerator> createDiscreteFieldsMap(String cardinalities) {
+        ArrayList<Long> parsedCardinalities = parseCommaSeparatedIntegers(cardinalities, -1, 0);
+        if (parsedCardinalities == null || parsedCardinalities.isEmpty()) {
+            return null;
+        }
+        HashMap<String, DiscreteGenerator> outputMap = new HashMap<String, DiscreteGenerator>();
+        for (int i = 0; i < parsedCardinalities.size(); i++) {
+            Long value = parsedCardinalities.get(i);
+            if (value <= 0) {
+                continue;
+            }
+            DiscreteGenerator gen = new DiscreteGenerator();
+            for (long j = 0; j < value; j++) {
+                gen.addValue(1, "value" + j);
+            }
+            outputMap.put("field" + i, gen);
+        }
+        if (outputMap.isEmpty()) {
+            return null;
+        }
+        return outputMap;
     }
 
     /**
@@ -318,10 +470,28 @@ public class MongoDbClient extends DB {
                     System.exit(1);
             }
 
-            // encryption - FLE
-            boolean use_encryption = Boolean.parseBoolean(props.getProperty("mongodb.fle", "false"));
+            // sharded
+            isSharded = Boolean.parseBoolean(props.getProperty("mongodb.sharded", "false"));
+
+            // encryption - FLE or Queryable Encryption
+            boolean use_fle = Boolean.parseBoolean(props.getProperty("mongodb.fle", "false"));
+            boolean use_qe = Boolean.parseBoolean(props.getProperty("mongodb.qe", "false"));
+            boolean use_encryption = use_fle || use_qe;
+            encryptionType = (use_fle ? Encryption.FLE : (use_qe ? Encryption.QUERYABLE : Encryption.UNENCRYPTED));
+
+            if (use_fle && use_qe) {
+                System.err.println("ERROR: mongodb.fle and mongodb.qe cannot both be true");
+                System.exit(1);
+            }
+
             boolean remote_schema = Boolean.parseBoolean(props.getProperty("mongodb.remote_schema", "false"));
             int numEncryptFields = Integer.parseInt(props.getProperty("mongodb.numFleFields", "10"));
+
+            if (use_qe && numEncryptFields > 0) {
+                contentionFactors = parseCommaSeparatedIntegers(
+                    props.getProperty("mongodb.contentionFactors", ""), numEncryptFields, -1);
+            }
+            discreteFields = createDiscreteFieldsMap(props.getProperty("mongodb.cardinalities", ""));
 
             try {
                 MongoClientSettings.Builder settingsBuilder = MongoClientSettings.builder();
@@ -436,7 +606,7 @@ public class MongoDbClient extends DB {
         MongoCollection<Document> collection = db[serverCounter++%db.length].getCollection(table);
         Document r = new Document("_id", key);
         for (String k : values.keySet()) {
-            byte[] data = values.get(k).toArray();
+            byte[] data = overrideDataIfDiscrete(k, values.get(k).toArray());
             if (datatype.equals("string")) {
                 r.put(k, new String(applyCompressibility(data)));
             } else {
@@ -538,7 +708,7 @@ public class MongoDbClient extends DB {
             Document u = new Document();
             Document fieldsToSet = new Document();
             for (String tmpKey : values.keySet()) {
-                byte[] data = values.get(tmpKey).toArray();
+                byte[] data = overrideDataIfDiscrete(tmpKey, values.get(tmpKey).toArray());
                 if (datatype.equals("string")) {
                     fieldsToSet.put(tmpKey, new String(applyCompressibility(data)));
                 } else {
