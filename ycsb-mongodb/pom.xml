@@ -45,7 +45,7 @@
   <!-- Properties Management -->
   <properties>
     <maven.assembly.version>2.2.1</maven.assembly.version>
-    <mongodb.version>4.6.0</mongodb.version>
+    <mongodb.version>4.7.0</mongodb.version>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
   </properties>
 
