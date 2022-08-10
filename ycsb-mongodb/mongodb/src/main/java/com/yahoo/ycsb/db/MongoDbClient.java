@@ -32,9 +32,13 @@ import com.yahoo.ycsb.ByteArrayByteIterator;
 import com.yahoo.ycsb.ByteIterator;
 import com.yahoo.ycsb.DB;
 import com.yahoo.ycsb.generator.DiscreteGenerator;
+import org.bson.BsonArray;
 import org.bson.BsonBinary;
 import org.bson.BsonDocument;
+import org.bson.BsonInt64;
+import org.bson.BsonString;
 import org.bson.Document;
+import org.bson.UuidRepresentation;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -49,7 +53,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.Vector;
 import java.util.concurrent.atomic.AtomicInteger;
-import org.bson.*;
 
 import java.util.Arrays;
 
@@ -169,7 +172,7 @@ public class MongoDbClient extends DB {
             UUID dataKeyId = getDataKeyOrCreateUUID(keyCollection, clientEncryption);
             BsonDocument queries = new BsonDocument("queryType", new BsonString("equality"));
 
-            if (contentionFactors != null && i < contentionFactors.size() && contentionFactors.get(i) > -1) {
+            if (i < contentionFactors.size() && contentionFactors.get(i) > -1) {
                 queries.append("contention", new BsonInt64(contentionFactors.get(i)));
             }
             fields.add(new BsonDocument("path", new BsonString("field" + i))
@@ -199,29 +202,27 @@ public class MongoDbClient extends DB {
     }
 
     private static byte[] overrideDataIfDiscrete(String key, byte[] data) {
-        if (discreteFields != null) {
-            // override the data with a value from discrete set
-            // generator.nextString() is read-only with a thread-local random number
-            // generator, so there's no need to synchronize this function.
-            DiscreteGenerator generator = discreteFields.get(key);
-            if (generator != null) {
-                byte[] discrete = generator.nextString().getBytes();
+        // override the data with a value from discrete set
+        // generator.nextString() is read-only with a thread-local random number
+        // generator, so there's no need to synchronize this function.
+        DiscreteGenerator generator = discreteFields.get(key);
+        if (generator != null) {
+            byte[] discrete = generator.nextString().getBytes();
 
-                if (discrete.length >= data.length) {
-                    // do not truncate if discrete value is longer than desired length
-                    return discrete;
-                }
-
-                // extend & pad to desired length
-                data = Arrays.copyOf(discrete, data.length);
-                Arrays.fill(data, discrete.length, data.length, (byte)'x');
+            if (discrete.length >= data.length) {
+                // do not truncate if discrete value is longer than desired length
+                return discrete;
             }
+
+            // extend & pad to desired length
+            data = Arrays.copyOf(discrete, data.length);
+            Arrays.fill(data, discrete.length, data.length, (byte)'x');
         }
         return data;
     }
 
-    private static boolean isCollectionCreated(MongoClient client, String collName) {
-        MongoCursor<String> collections = client.getDatabase(database).listCollectionNames().iterator();
+    private static boolean isCollectionCreated(MongoClient client, String dbName, String collName) {
+        MongoCursor<String> collections = client.getDatabase(dbName).listCollectionNames().iterator();
         while (collections.hasNext()) {
             String c = collections.next();
             if (c.equals(collName)) {
@@ -298,7 +299,7 @@ public class MongoDbClient extends DB {
         if (encryptionType == Encryption.QUERYABLE) {
             MongoClient client = MongoClients.create(clientSettings);
 
-            if (!isCollectionCreated(client, collName)) {
+            if (!isCollectionCreated(client, database, collName)) {
                 CreateCollectionOptions options = new CreateCollectionOptions();
                 options.encryptedFields(generateEncryptedFieldsDocument(keyCollection, clientEncryption, numFields));
 
@@ -338,19 +339,14 @@ public class MongoDbClient extends DB {
         return autoEncryptionSettings;
     }
 
-    private static ArrayList<Long> parseCommaSeparatedIntegers(String toParse, int outputListSize, long defaultValue) {
+    private static ArrayList<Long> parseCommaSeparatedIntegers(String toParse, long defaultValue) {
         if (toParse.trim().isEmpty()) {
             return new ArrayList<Long>();
         }
         // -1 for limit implies that any trailing empty strings are included in the output array
         String[] values = toParse.split(",", -1);
-
-        if (outputListSize < 0) {
-            outputListSize = values.length;
-        }
-        ArrayList<Long> parsedValues = new ArrayList<Long>(Collections.nCopies(outputListSize, defaultValue));
-        int limit = Math.min(values.length, outputListSize);
-        for (int i = 0; i < limit; i++) {
+        ArrayList<Long> parsedValues = new ArrayList<Long>(Collections.nCopies(values.length, defaultValue));
+        for (int i = 0; i < values.length; i++) {
             String v = values[i].trim();
             parsedValues.set(i, v.isEmpty() ? defaultValue : Long.parseLong(v));
         }
@@ -358,7 +354,7 @@ public class MongoDbClient extends DB {
     }
 
     private static HashMap<String, DiscreteGenerator> createDiscreteFieldsMap(String cardinalities) {
-        ArrayList<Long> parsedCardinalities = parseCommaSeparatedIntegers(cardinalities, -1, 0);
+        ArrayList<Long> parsedCardinalities = parseCommaSeparatedIntegers(cardinalities, 0);
         HashMap<String, DiscreteGenerator> outputMap = new HashMap<String, DiscreteGenerator>();
         for (int i = 0; i < parsedCardinalities.size(); i++) {
             Long value = parsedCardinalities.get(i);
@@ -481,10 +477,7 @@ public class MongoDbClient extends DB {
             boolean remote_schema = Boolean.parseBoolean(props.getProperty("mongodb.remote_schema", "false"));
             int numEncryptFields = Integer.parseInt(props.getProperty("mongodb.numFleFields", "10"));
 
-            if (use_qe && numEncryptFields > 0) {
-                contentionFactors = parseCommaSeparatedIntegers(
-                    props.getProperty("mongodb.contentionFactors", ""), numEncryptFields, -1);
-            }
+            contentionFactors = parseCommaSeparatedIntegers(props.getProperty("mongodb.contentionFactors", ""), -1);
             discreteFields = createDiscreteFieldsMap(props.getProperty("mongodb.cardinalities", ""));
 
             try {
