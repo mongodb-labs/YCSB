@@ -128,7 +128,8 @@ public class MongoDbClient extends DB {
     private static Encryption encryptionType = Encryption.UNENCRYPTED;
     private static ArrayList<Long> contentionFactors;
     private static HashMap<String, DiscreteGenerator> discreteFields;
-
+    private static String cryptSharedLibPath = "";
+    private static boolean useCryptSharedLib = false;
 
     private static String generateSchema(String keyId, int numFields) {
         StringBuilder schema = new StringBuilder();
@@ -279,9 +280,16 @@ public class MongoDbClient extends DB {
         String collName = "usertable";
         String collNamespace = database + "." + collName;
 
+        Map<String, Object> extraOptions = new HashMap<String, Object>();
+        extraOptions.put("mongocryptdBypassSpawn", true);
+        if (useCryptSharedLib) {
+            extraOptions.put("cryptSharedLibRequired", true);
+            extraOptions.put("cryptSharedLibPath", cryptSharedLibPath);
+        }
+
         AutoEncryptionSettings.Builder autoEncryptionSettingsBuilder = AutoEncryptionSettings.builder()
             .keyVaultNamespace(keyVaultNamespace)
-            .extraOptions(Collections.singletonMap("mongocryptdBypassSpawn", true) )
+            .extraOptions(extraOptions)
             .kmsProviders(kmsProviders);
 
         if (encryptionType == Encryption.FLE) {
@@ -472,6 +480,15 @@ public class MongoDbClient extends DB {
             }
             if (use_qe) {
                 encryptionType = Encryption.QUERYABLE;
+            }
+
+            useCryptSharedLib = Boolean.parseBoolean(props.getProperty("mongodb.useCryptSharedLib", "false"));
+            if (useCryptSharedLib) {
+                cryptSharedLibPath = props.getProperty("mongodb.cryptSharedLibPath", "");
+                if (cryptSharedLibPath.isEmpty()) {
+                    System.err.println("ERROR: mongodb.cryptSharedLibPath must be non-empty if mongodb.useCryptSharedLib is true");
+                    System.exit(1);
+                }
             }
 
             boolean remote_schema = Boolean.parseBoolean(props.getProperty("mongodb.remote_schema", "false"));
