@@ -128,8 +128,6 @@ public class MongoDbClient extends DB {
     private static Encryption encryptionType = Encryption.UNENCRYPTED;
     private static ArrayList<Long> contentionFactors;
     private static HashMap<String, DiscreteGenerator> discreteFields;
-    private static String cryptSharedLibPath = "";
-    private static boolean useCryptSharedLib = false;
 
     private static String generateSchema(String keyId, int numFields) {
         StringBuilder schema = new StringBuilder();
@@ -233,7 +231,20 @@ public class MongoDbClient extends DB {
         return false;
     }
 
-    private static AutoEncryptionSettings generateEncryptionSettings(String url, Boolean remote_schema, int numFields) {
+    private static AutoEncryptionSettings generateEncryptionSettings(String url, Properties props) {
+        boolean remote_schema = Boolean.parseBoolean(props.getProperty("mongodb.remote_schema", "false"));
+        int numFields = Integer.parseInt(props.getProperty("mongodb.numFleFields", "10"));
+
+        boolean useCryptSharedLib = Boolean.parseBoolean(props.getProperty("mongodb.useCryptSharedLib", "false"));
+        String cryptSharedLibPath = "";
+        if (useCryptSharedLib) {
+            cryptSharedLibPath = props.getProperty("mongodb.cryptSharedLibPath", "");
+            if (cryptSharedLibPath.isEmpty()) {
+                System.err.println("ERROR: mongodb.cryptSharedLibPath must be non-empty if mongodb.useCryptSharedLib is true");
+                System.exit(1);
+            }
+        }
+
         // Use a hard coded local key since it needs to be shared between load and run phases
         byte[] localMasterKey = new byte[]{0x77, 0x1f, 0x2d, 0x7d, 0x76, 0x74, 0x39, 0x08, 0x50, 0x0b, 0x61, 0x14,
             0x3a, 0x07, 0x24, 0x7c, 0x37, 0x7b, 0x60, 0x0f, 0x09, 0x11, 0x23, 0x65,
@@ -482,18 +493,6 @@ public class MongoDbClient extends DB {
                 encryptionType = Encryption.QUERYABLE;
             }
 
-            useCryptSharedLib = Boolean.parseBoolean(props.getProperty("mongodb.useCryptSharedLib", "false"));
-            if (useCryptSharedLib) {
-                cryptSharedLibPath = props.getProperty("mongodb.cryptSharedLibPath", "");
-                if (cryptSharedLibPath.isEmpty()) {
-                    System.err.println("ERROR: mongodb.cryptSharedLibPath must be non-empty if mongodb.useCryptSharedLib is true");
-                    System.exit(1);
-                }
-            }
-
-            boolean remote_schema = Boolean.parseBoolean(props.getProperty("mongodb.remote_schema", "false"));
-            int numEncryptFields = Integer.parseInt(props.getProperty("mongodb.numFleFields", "10"));
-
             contentionFactors = parseCommaSeparatedIntegers(props.getProperty("mongodb.contentionFactors", ""), -1);
             discreteFields = createDiscreteFieldsMap(props.getProperty("mongodb.cardinalities", ""));
 
@@ -517,7 +516,7 @@ public class MongoDbClient extends DB {
                 for (int i=0; i<server.length; i++) {
                    String url= userPassword.equals("") ? server[i] : server[i].replace("://","://"+userPassword);
                    if ( i==0 && use_encryption) {
-                       AutoEncryptionSettings autoEncryptionSettings = generateEncryptionSettings(url, remote_schema, numEncryptFields);
+                       AutoEncryptionSettings autoEncryptionSettings = generateEncryptionSettings(url, props);
                        settingsBuilder.autoEncryptionSettings(autoEncryptionSettings);
                    }
 
