@@ -290,18 +290,16 @@ public class MongoDbClient extends DB {
                 BsonDocument.parse(generateSchema(base64DataKeyId, numFields))));
         }
         else if (encryptionType == Encryption.QUERYABLE) {
-            autoEncryptionSettingsBuilder.encryptedFieldsMap(Collections.singletonMap(collNamespace,
-                generateEncryptedFieldsDocument(keyCollection, clientEncryption, numFields)));
-        }
-
-        AutoEncryptionSettings autoEncryptionSettings = autoEncryptionSettingsBuilder.build();
-
-        if (encryptionType == Encryption.QUERYABLE) {
             MongoClient client = MongoClients.create(clientSettings);
 
             if (!isCollectionCreated(client, database, collName)) {
                 CreateCollectionOptions options = new CreateCollectionOptions();
-                options.encryptedFields(generateEncryptedFieldsDocument(keyCollection, clientEncryption, numFields));
+                BsonDocument encryptedFieldsDocument = generateEncryptedFieldsDocument(keyCollection, clientEncryption, numFields);
+
+                autoEncryptionSettingsBuilder.encryptedFieldsMap(
+                    Collections.singletonMap(collNamespace, encryptedFieldsDocument));
+
+                options.encryptedFields(encryptedFieldsDocument);
 
                 // This creates the encrypted data collection (EDC) and the auxilliary
                 // collections, as well as the index on the __safeContent__ field.
@@ -316,7 +314,7 @@ public class MongoDbClient extends DB {
                     client.getDatabase("admin").runCommand(shardCollCmd);
                 }
             }
-            return autoEncryptionSettings;
+            return autoEncryptionSettingsBuilder.build();
         }
 
         if (remote_schema) {
@@ -336,7 +334,7 @@ public class MongoDbClient extends DB {
             }
         }
 
-        return autoEncryptionSettings;
+        return autoEncryptionSettingsBuilder.build();
     }
 
     private static ArrayList<Long> parseCommaSeparatedIntegers(String toParse, long defaultValue) {
