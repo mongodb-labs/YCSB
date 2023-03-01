@@ -17,12 +17,12 @@
 
   <dependencies>
     <dependency>
-      <groupId>org.codehaus.jackson</groupId>
+      <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
       <version>${jackson.api.version}</version>
     </dependency>
     <dependency>
-      <groupId>org.codehaus.jackson</groupId>
+      <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-core</artifactId>
       <version>${jackson.api.version}</version>
     </dependency>
