@@ -512,7 +512,9 @@ public class MongoDbClient extends DB {
                 db = new MongoDatabase[server.length];
 
                 for (int i=0; i<server.length; i++) {
-                   String url= userPassword.equals("") ? server[i] : server[i].replace("://","://"+userPassword);
+                   String url= server[i].contains("@")
+                            ? server[i]
+                            : userPassword.equals("") ? server[i] : server[i].replace("://","://"+userPassword);
                    if ( i==0 && use_encryption) {
                        AutoEncryptionSettings autoEncryptionSettings = generateEncryptionSettings(url, props);
                        settingsBuilder.autoEncryptionSettings(autoEncryptionSettings);
@@ -526,8 +528,8 @@ public class MongoDbClient extends DB {
 
                        String dispURI = userPassword.equals("")
                                ? url
-                               : url.replace(":" + userPassword, ":XXXXXX");
-                       System.out.println("DEBUG mongo connection created to " + dispURI);
+                               : url.replace(userPassword, username + ":XXXXXX@");
+                       System.out.println("mongo connection created to " + dispURI);
                    } else {
                        settingsBuilder.applyToClusterSettings(builder ->
                                builder.hosts(Collections.singletonList(new ServerAddress(url))));
