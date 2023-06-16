@@ -532,6 +532,7 @@ public class MongoDbClient extends DB {
                 db = new MongoDatabase[server.length];
 
                 for (int i=0; i<server.length; i++) {
+                   // If the URI does not contain credentials, but they are provided in the properties, append them to the URI
                    String url= server[i].contains("@")
                             ? server[i]
                             : userPassword.equals("") ? server[i] : server[i].replace("://","://"+userPassword);
