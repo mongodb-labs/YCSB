@@ -403,10 +403,30 @@ public class MongoDbClient extends DB {
             Properties props = getProperties();
             String urls = props.getProperty("mongodb.url", "mongodb://localhost:27017");
 
-            database = props.getProperty("mongodb.database", "ycsb");
             /* Credentials */
+            database = props.getProperty("mongodb.database", "ycsb");
+
+            // Retrieve username and password from properties, set to empty string if they are undefined
             String username = props.getProperty("mongodb.username", "");
             String password = props.getProperty("mongodb.password", "");
+
+            // If the URI contains an @, that means a username and password are specified here as well, so this will parse them out
+            if (urls.contains("@")) {
+                String uriCredentials = urls.substring(urls.indexOf("//") + 2, urls.indexOf("@"));
+                String[] uriCredentialsList = uriCredentials.split(":");
+                String uriUsername = uriCredentialsList[0];
+                String uriPassword = uriCredentialsList[1];
+
+                // If both the URI and properties have credentials defined, check that they are equivalent
+                // If they are not, update credentials to those in the URI and log a warning
+                if (props.keySet().contains("mongodb.username") && props.keySet().contains("mongodb.password")){
+                    if (!uriUsername.equals(username) || !uriPassword.equals(password)){
+                        System.out.println("WARNING: Username/Password provided in the properties does not match what is present in the URI, defaulting to the URI");
+                    }
+                }
+                username = uriUsername;
+                password = uriPassword;
+            }
 
             // Set insert batchsize, default 1 - to be YCSB-original equivalent
             final String batchSizeString = props.getProperty("batchsize", "1");
