@@ -46,6 +46,8 @@ public class OneMeasurementHistogram extends OneMeasurement
     //keep a windowed version of these stats for printing status
     int windowoperations;
     long windowtotallatency;
+    int windowmax=-1;
+    int windowmin=-1;
 
     int min;
     int max;
@@ -61,6 +63,8 @@ public class OneMeasurementHistogram extends OneMeasurement
         totallatency=0;
         windowoperations=0;
         windowtotallatency=0;
+        windowmin=-1;
+        windowmax=-1;
         min=-1;
         max=-1;
         returncodes=new HashMap<Integer,int[]>();
@@ -100,9 +104,17 @@ public class OneMeasurementHistogram extends OneMeasurement
         windowoperations++;
         windowtotallatency+=latency;
 
+        if ( (min<0) || (latency<windowmin) ) {
+            windowmin=latency;
+        }
+
         if ( (min<0) || (latency<min) )
         {
             min=latency;
+        }
+
+        if ( (max<0) || (latency>windowmax) ) {
+            windowmax=latency;
         }
 
         if ( (max<0) || (latency>max) )
@@ -158,9 +170,14 @@ public class OneMeasurementHistogram extends OneMeasurement
         }
         DecimalFormat d = new DecimalFormat("#.##");
         double report=((double)windowtotallatency)/((double)windowoperations);
+        double reportMin=((double)windowmin)/((double)1000);
+        double reportMax=((double)windowmax)/((double)1000);
+        double reportAvg=((double)report)/((double)1000);
         windowtotallatency=0;
         windowoperations=0;
-        return "["+getName()+" AverageLatency(us)="+d.format(report)+"]";
+        windowmin=-1;
+        windowmax=-1;
+        return "["+getName()+" latencies => avg(ms)=" + d.format(reportAvg) + " max(ms)="+ d.format(reportMax) +"]";
     }
 
     @Override
