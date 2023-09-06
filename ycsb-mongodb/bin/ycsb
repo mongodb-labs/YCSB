@@ -52,24 +52,24 @@ OPTIONS = {
 }
 
 def usage():
-    print "Usage: %s command database [options]" % sys.argv[0]
+    print("Usage: %s command database [options]" % sys.argv[0]) 
 
-    print "\nCommands:"
+    print("\nCommands:")
     for command in sorted(COMMANDS.keys()):
-        print "    %s %s" % (command.ljust(13), COMMANDS[command]["description"])
+        print("    %s %s" % (command.ljust(13), COMMANDS[command]["description"])) 
 
-    print "\nDatabases:"
+    print("\nDatabases:")
     for db in sorted(DATABASES.keys()):
-        print "    %s %s" % (db.ljust(13), BASE_URL + db.split("-")[0])
+        print("    %s %s" % (db.ljust(13), BASE_URL + db.split("-")[0])) 
 
-    print "\nOptions:"
+    print("\nOptions:")
     for option in sorted(OPTIONS.keys()):
-        print "    %s %s" % (option.ljust(13), OPTIONS[option])
+        print("    %s %s" % (option.ljust(13), OPTIONS[option])) 
 
-    print """\nWorkload Files:
+    print("""\nWorkload Files:
     There are various predefined workloads under workloads/ directory.
     See https://github.com/brianfrankcooper/YCSB/wiki/Core-Properties
-    for the list of workload properties."""
+    for the list of workload properties.""")
 
     sys.exit(1)
 
@@ -95,10 +95,10 @@ def get_ycsb_home():
 if len(sys.argv) < 3:
     usage()
 if sys.argv[1] not in COMMANDS:
-    print "ERROR: Command '%s' not found" % sys.argv[1]
+    print("ERROR: Command '%s' not found" % sys.argv[1]) 
     usage()
 if sys.argv[2] not in DATABASES:
-    print "ERROR: Database '%s' not found" % sys.argv[2]
+    print("ERROR: Database '%s' not found" % sys.argv[2]) 
     usage()
 
 ycsb_home = get_ycsb_home()
@@ -111,5 +111,5 @@ ycsb_command = ["java", "-cp", os.pathsep.join(find_jars(ycsb_home, database)), 
                 COMMANDS[sys.argv[1]]["main"], "-db", db_classname] + options
 if command:
     ycsb_command.append(command)
-print " ".join(ycsb_command)
+print(" ".join(ycsb_command))
 subprocess.call(ycsb_command)
