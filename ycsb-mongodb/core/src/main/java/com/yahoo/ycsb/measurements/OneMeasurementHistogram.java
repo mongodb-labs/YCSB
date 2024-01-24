@@ -34,7 +34,7 @@ import com.yahoo.ycsb.measurements.exporter.MeasurementsExporter;
 public class OneMeasurementHistogram extends OneMeasurement
 {
     public static final String BUCKETS="histogram.buckets";
-    public static final String BUCKETS_DEFAULT="10000";
+    public static final String BUCKETS_DEFAULT="1000";
     public static final int BUCKET_SIZE=10; // In microseconds
 
     int _buckets;
