@@ -298,8 +298,7 @@ public final class Client {
     warningthread.start();
 
     Measurements.setProperties(props);
-    Measurements.getMeasurements().init();
-    
+        
     Workload workload = getWorkload(props);
 
     final Tracer tracer = getTracer(props, workload);

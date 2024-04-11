@@ -28,10 +28,13 @@ import com.mongodb.client.model.vault.DataKeyOptions;
 import com.mongodb.client.result.UpdateResult;
 import com.mongodb.client.vault.ClientEncryption;
 import com.mongodb.client.vault.ClientEncryptions;
+
 import site.ycsb.ByteArrayByteIterator;
 import site.ycsb.ByteIterator;
 import site.ycsb.DB;
 import site.ycsb.generator.DiscreteGenerator;
+import site.ycsb.Status;
+
 import org.bson.BsonArray;
 import org.bson.BsonBinary;
 import org.bson.BsonDocument;
@@ -601,17 +604,17 @@ public class MongoDbClient extends DB {
      * @return Zero on success, a non-zero error code on error. See this class's description for a discussion of error codes.
      */
     @Override
-    public int delete(String table, String key) {
+    public Status delete(String table, String key) {
         try {
             MongoCollection<Document> collection = db[serverCounter++%db.length].getCollection(table);
             Document q = new Document("_id", key);
             collection.deleteMany(q);
-            return 0;
+            return Status.OK;
         }
         catch (Exception e) {
             System.err.println(e.toString());
             e.printStackTrace();
-            return 1;
+            return Status.ERROR;
         }
     }
 
@@ -625,8 +628,8 @@ public class MongoDbClient extends DB {
      * @return Zero on success, a non-zero error code on error. See this class's description for a discussion of error codes.
      */
     @Override
-    public int insert(String table, String key,
-            HashMap<String, ByteIterator> values) {
+    public Status insert(String table, String key,
+            Map<String, ByteIterator> values) {
         MongoCollection<Document> collection = db[serverCounter++%db.length].getCollection(table);
         Document r = new Document("_id", key);
         for (String k : values.keySet()) {
@@ -640,12 +643,12 @@ public class MongoDbClient extends DB {
         if (BATCHSIZE == 1 ) {
            try {
              collection.insertOne(r);
-             return 0;
+             return Status.OK;
            }
            catch (Exception e) {
              System.err.println("Couldn't insert key " + key);
              e.printStackTrace();
-             return 1;
+             return Status.ERROR;
            }
         }
         if (insertCount == 0) {
@@ -654,17 +657,17 @@ public class MongoDbClient extends DB {
         insertCount++;
         insertList.add(r);
         if (insertCount < BATCHSIZE) {
-            return 0;
+            return Status.OK;
         } else {
            try {
              collection.insertMany(insertList);
              insertCount = 0;
-             return 0;
+             return Status.OK;
            }
            catch (Exception e) {
              System.err.println("Exception while trying bulk insert with " + insertCount);
              e.printStackTrace();
-             return 1;
+             return Status.ERROR;
            }
         }
     }
@@ -680,8 +683,8 @@ public class MongoDbClient extends DB {
      */
     @Override
     @SuppressWarnings({"unchecked", "rawtypes"})
-    public int read(String table, String key, Set<String> fields,
-            HashMap<String, ByteIterator> result) {
+    public Status read(String table, String key, Set<String> fields,
+            Map<String, ByteIterator> result) {
         try {
             MongoCollection<Document> collection = db[serverCounter++%db.length].getCollection(table);
             Document q = new Document("_id", key);
@@ -703,14 +706,14 @@ public class MongoDbClient extends DB {
                 // TODO: this is wrong.  It is totally violating the expected type of the values in result, which is ByteIterator
                 // TODO: somewhere up the chain this should be resulting in a ClassCastException
                 result.putAll(new LinkedHashMap(queryResult));
-                return 0;
+                return Status.OK;
             }
             System.err.println("No results returned for key " + key);
-            return 1;
+            return Status.ERROR;
         }
         catch (Exception e) {
             System.err.println(e.toString());
-            return 1;
+            return Status.ERROR;
         }
     }
 
@@ -724,8 +727,8 @@ public class MongoDbClient extends DB {
      * @return Zero on success, a non-zero error code on error. See this class's description for a discussion of error codes.
      */
     @Override
-    public int update(String table, String key,
-            HashMap<String, ByteIterator> values) {
+    public Status update(String table, String key,
+            Map<String, ByteIterator> values) {
         try {
             MongoCollection<Document> collection = db[serverCounter++%db.length].getCollection(table);
             Document q = new Document("_id", key);
@@ -743,13 +746,13 @@ public class MongoDbClient extends DB {
             UpdateResult res = collection.updateOne(q, u);
             if (res.getMatchedCount() == 0) {
                 System.err.println("Nothing updated for key " + key);
-                return 1;
+                return Status.ERROR;
             }
-            return 0;
+            return Status.OK;
         }
         catch (Exception e) {
             System.err.println(e.toString());
-            return 1;
+            return Status.ERROR;
         }
     }
 
@@ -764,7 +767,7 @@ public class MongoDbClient extends DB {
      * @return Zero on success, a non-zero error code on error. See this class's description for a discussion of error codes.
      */
     @Override
-    public int scan(String table, String startkey, int recordcount,
+    public Status scan(String table, String startkey, int recordcount,
             Set<String> fields, Vector<HashMap<String, ByteIterator>> result) {
         MongoCursor<Document> cursor = null;
         try {
@@ -783,7 +786,7 @@ public class MongoDbClient extends DB {
             cursor = collection.find(q).projection(fieldsToReturn).sort(s).limit(recordcount).cursor();
             if (!cursor.hasNext()) {
                 System.err.println("Nothing found in scan for key " + startkey);
-                return 1;
+                return Status.ERROR;
             }
             while (cursor.hasNext()) {
                 // toMap() returns a Map, but result.add() expects a
@@ -796,11 +799,11 @@ public class MongoDbClient extends DB {
                 result.add(resultMap);
             }
 
-            return 0;
+            return Status.OK;
         }
         catch (Exception e) {
             System.err.println(e.toString());
-            return 1;
+            return Status.ERROR;
         }
         finally {
              if( cursor != null ) {

@@ -163,9 +163,4 @@ public class OneMeasurementHistogram extends OneMeasurement {
     windowoperations = 0;
     return "[" + getName() + " AverageLatency(us)=" + d.format(report) + "]";
   }
-
-  @Override
-  public boolean isEmpty() {
-    return operations == 0;
-  }
 }

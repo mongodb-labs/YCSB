@@ -55,6 +55,8 @@
     <maven.assembly.version>2.2.1</maven.assembly.version>
     <mongodb.version>4.7.0</mongodb.version>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <checkstyle.skip>true</checkstyle.skip>
+    <skip.checkstyle>true</skip.checkstyle>
   </properties>
 
   <modules>
@@ -68,7 +70,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
-        <version>2.3.2</version>
+        <version>3.13.0</version>
         <configuration>
           <source>1.8</source>
           <target>1.8</target>

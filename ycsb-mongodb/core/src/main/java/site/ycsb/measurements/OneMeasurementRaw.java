@@ -204,9 +204,4 @@ public class OneMeasurementRaw extends OneMeasurement {
 
     return toReturn;
   }
-
-  @Override
-  public boolean isEmpty() {
-    return operations == 0;
-  }
 }

@@ -164,11 +164,6 @@ public class OneMeasurementHdrHistogram extends OneMeasurement {
         + d.format(intervalHistogram.getValueAtPercentile(99.99)) + "]";
   }
 
-  @Override
-  public boolean isEmpty() {
-    return operations == 0;
-  }
-
   private Histogram getIntervalHistogramAndAccumulate() {
     Histogram intervalHistogram = histogram.getIntervalHistogram();
     // add this to the total time histogram.

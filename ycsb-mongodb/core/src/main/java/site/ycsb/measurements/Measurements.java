@@ -121,16 +121,6 @@ public class Measurements {
     }
   }
 
-  public void init() {
-        // Touch all normal measurements
-        initMeasurement("READ");
-        initMeasurement("UPDATE");
-        initMeasurement("INSERT");
-        initMeasurement("SCAN");
-        initMeasurement("READMODIFYWRITE");
-        initMeasurement("CLEANUP");
-  }
-
   private OneMeasurement constructOneMeasurement(String name) {
     switch (measurementType) {
     case HISTOGRAM:
@@ -267,10 +257,6 @@ public class Measurements {
    */
   public void exportMeasurements(MeasurementsExporter exporter) throws IOException {
     for (OneMeasurement measurement : opToMesurementMap.values()) {
-      if(measurement.isEmpty()) {
-                continue;
-      }
-
       measurement.exportMeasurements(exporter);
     }
     for (OneMeasurement measurement : opToIntendedMesurementMap.values()) {
@@ -284,17 +270,10 @@ public class Measurements {
   public synchronized String getSummary() {
     String ret = "";
     for (OneMeasurement m : opToMesurementMap.values()) {
-      if(m.isEmpty()) {
-        continue;
-      }
       ret += m.getSummary() + " ";
     }
 
     for (OneMeasurement m : opToIntendedMesurementMap.values()) {
-      if(m.isEmpty()) {
-        continue;
-      }
-      
       ret += m.getSummary() + " ";
     }
     return ret;

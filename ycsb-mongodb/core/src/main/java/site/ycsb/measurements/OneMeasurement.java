@@ -49,8 +49,6 @@ public abstract class OneMeasurement {
 
   public abstract String getSummary();
 
-  public abstract boolean isEmpty();
-
   /**
    * No need for synchronization, using CHM to deal with that.
    */

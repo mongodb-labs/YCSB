@@ -72,9 +72,4 @@ public class TwoInOneMeasurement extends OneMeasurement {
   public String getSummary() {
     return thing1.getSummary() + "\n" + thing2.getSummary();
   }
-
-  @Override
-  public boolean isEmpty() {
-    return operations == 0;
-  }
 }
