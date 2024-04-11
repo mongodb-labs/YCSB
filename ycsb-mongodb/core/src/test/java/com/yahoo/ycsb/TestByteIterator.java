@@ -1,4 +1,4 @@
-package com.yahoo.ycsb;
+package site.ycsb.generator;
 
 import org.testng.annotations.Test;
 import static org.testng.AssertJUnit.*;

@@ -15,11 +15,11 @@
  * LICENSE file.
  */
 
-package com.yahoo.ycsb.generator;
+package site.ycsb.generator;
 
 import java.util.Random;
 
-import com.yahoo.ycsb.Utils;
+import site.ycsb.Utils;
 
 /**
  * Generates integers randomly uniform from an interval.

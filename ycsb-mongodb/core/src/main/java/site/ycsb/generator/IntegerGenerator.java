@@ -15,7 +15,7 @@
  * LICENSE file.
  */
 
-package com.yahoo.ycsb.generator;
+package site.ycsb.generator;
 
 /**
  * A generator that is capable of generating ints as well as strings
