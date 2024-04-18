@@ -23,13 +23,7 @@ import os
 import shlex
 import sys
 import subprocess
-
-try:
-    mod = __import__('argparse')
-    import argparse
-except ImportError:
-    print('[ERROR] argparse not found. Try installing it via "pip".', file=sys.stderr)
-    exit(1)
+import argparse
 
 BASE_URL = "https://github.com/brianfrankcooper/YCSB/tree/master/"
 COMMANDS = {
@@ -51,7 +45,6 @@ COMMANDS = {
 }
 
 DATABASES = {
-   
     "mongodb"      : "site.ycsb.db.MongoDbClient",
     "mongodb-async": "site.ycsb.db.AsyncMongoDbClient",
 }
