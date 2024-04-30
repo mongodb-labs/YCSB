@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2010-2016 Yahoo! Inc., 2017 YCSB contributors All rights reserved.
+ * Copyright (c) 2015-2016 Yahoo! Inc., 2017 YCSB contributors All rights reserved.
  * <p>
  * Licensed under the Apache License, Version 2.0 (the "License"); you
  * may not use this file except in compliance with the License. You
@@ -26,18 +26,17 @@ import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 
 /**
- * Export measurements into a machine readable JSON file.
+ * Export measurements into a machine readable JSON Array of measurement objects.
  */
-public class JSONMeasurementsExporter implements MeasurementsExporter {
-
+public class JSONArrayMeasurementsExporter implements MeasurementsExporter {
   private final JsonFactory factory = new JsonFactory();
   private JsonGenerator g;
 
-  public JSONMeasurementsExporter(OutputStream os) throws IOException {
-
+  public JSONArrayMeasurementsExporter(OutputStream os) throws IOException {
     BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(os));
     g = factory.createJsonGenerator(bw);
     g.setPrettyPrinter(new DefaultPrettyPrinter());
+    g.writeStartArray();
   }
 
   public void write(String metric, String measurement, int i) throws IOException {
@@ -66,8 +65,8 @@ public class JSONMeasurementsExporter implements MeasurementsExporter {
 
   public void close() throws IOException {
     if (g != null) {
+      g.writeEndArray();
       g.close();
     }
   }
-
 }

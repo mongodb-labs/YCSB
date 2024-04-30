@@ -14,30 +14,32 @@
  * permissions and limitations under the License. See accompanying
  * LICENSE file.
  */
+
 package site.ycsb.generator;
 
 /**
- * A trivial integer generator that always returns the same value.
+ * A generator that is capable of generating numeric values.
  *
  */
-public class ConstantIntegerGenerator extends NumberGenerator {
-  private final int i;
+public abstract class NumberGenerator extends Generator<Number> {
+  private Number lastVal;
 
   /**
-   * @param i The integer that this generator will always return.
+   * Set the last value generated. NumberGenerator subclasses must use this call
+   * to properly set the last value, or the {@link #lastValue()} calls won't work.
    */
-  public ConstantIntegerGenerator(int i) {
-    this.i = i;
+  protected void setLastValue(Number last) {
+    lastVal = last;
   }
+
 
   @Override
-  public Integer nextValue() {
-    return i;
+  public Number lastValue() {
+    return lastVal;
   }
 
-  @Override
-  public double mean() {
-    return i;
-  }
-
+  /**
+   * Return the expected value (mean) of the values this generator will return.
+   */
+  public abstract double mean();
 }
