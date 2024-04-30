@@ -1,12 +1,12 @@
 /**
- * Copyright (c) 2010 Yahoo! Inc. All rights reserved.
- *
+ * Copyright (c) 2010-2016 Yahoo! Inc., 2017 YCSB contributors All rights reserved.
+ * <p>
  * Licensed under the Apache License, Version 2.0 (the "License"); you
  * may not use this file except in compliance with the License. You
  * may obtain a copy of the License at
- *
+ * <p>
  * http://www.apache.org/licenses/LICENSE-2.0
- *
+ * <p>
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
@@ -15,172 +15,132 @@
  * LICENSE file.
  */
 
-package com.yahoo.ycsb.measurements;
+package site.ycsb.measurements;
+
+import site.ycsb.measurements.exporter.MeasurementsExporter;
 
 import java.io.IOException;
 import java.text.DecimalFormat;
-import java.util.HashMap;
 import java.util.Properties;
 import java.util.Vector;
 
-import com.yahoo.ycsb.measurements.exporter.MeasurementsExporter;
+class SeriesUnit {
+  /**
+   * @param time
+   * @param average
+   */
+  public SeriesUnit(long time, double average) {
+    this.time = time;
+    this.average = average;
+  }
 
-class SeriesUnit
-{
-    /**
-     * @param time
-     * @param sum
-     * @param count
-     */
-    public SeriesUnit(long time, long sum, long count) {
-        this.time = time;
-        this.average = (double)sum/(double)count;
-    }
-    public long time;
-    public double average;
+  protected final long time;
+  protected final double average;
 }
 
 /**
  * A time series measurement of a metric, such as READ LATENCY.
  */
-public class OneMeasurementTimeSeries extends OneMeasurement
-{
-    /**
-     * Granularity for time series; measurements will be averaged in chunks of this granularity. Units are microseconds.
-     */
-    public static final String GRANULARITY="timeseries.granularity";
+public class OneMeasurementTimeSeries extends OneMeasurement {
 
-    public static final String GRANULARITY_DEFAULT="1000";
+  /**
+   * Granularity for time series; measurements will be averaged in chunks of this granularity. Units are milliseconds.
+   */
+  public static final String GRANULARITY = "timeseries.granularity";
+  public static final String GRANULARITY_DEFAULT = "1000";
 
-    int _granularity;
-    Vector<SeriesUnit> _measurements;
+  private final int granularity;
+  private final Vector<SeriesUnit> measurements;
 
-    long start=0;
-    long lastUnit=0;
-    int count=0;
-    int sum=0;
-    int operations=0;
-    long totallatency=0;
+  private long start = -1;
+  private long currentunit = -1;
+  private long count = 0;
+  private long sum = 0;
+  private long operations = 0;
+  private long totallatency = 0;
 
-    //keep a windowed version of these stats for printing status
-    int windowoperations=0;
-    long windowtotallatency=0;
+  //keep a windowed version of these stats for printing status
+  private int windowoperations = 0;
+  private long windowtotallatency = 0;
 
-    int min=-1;
-    int max=-1;
+  private int min = -1;
+  private int max = -1;
 
-    private HashMap<Integer, int[]> returncodes;
+  public OneMeasurementTimeSeries(String name, Properties props) {
+    super(name);
+    granularity = Integer.parseInt(props.getProperty(GRANULARITY, GRANULARITY_DEFAULT));
+    measurements = new Vector<>();
+  }
 
-    public OneMeasurementTimeSeries(String name, Properties props)
-    {
-        super(name);
-        _granularity=Integer.parseInt(props.getProperty(GRANULARITY,GRANULARITY_DEFAULT));
-        _measurements=new Vector<SeriesUnit>();
-        returncodes=new HashMap<Integer,int[]>();
-        start=System.nanoTime()/1000;
+  private synchronized void checkEndOfUnit(boolean forceend) {
+    long now = System.currentTimeMillis();
 
-        // Set an initial pin
-        _measurements.add(new SeriesUnit(0,0,1));
+    if (start < 0) {
+      currentunit = 0;
+      start = now;
     }
 
-    void checkEndOfUnit(boolean forceend)
-    {
-        long now=(System.nanoTime()/1000)-start;
+    long unit = ((now - start) / granularity) * granularity;
 
-        long diff=now-lastUnit;
-        if ( (diff>=_granularity) || (forceend) )
-        {
-            if(count==0)
-            {
-                return;
-            }
+    if ((unit > currentunit) || (forceend)) {
+      double avg = ((double) sum) / ((double) count);
+      measurements.add(new SeriesUnit(currentunit, avg));
 
-            _measurements.add(new SeriesUnit(now,sum,count));
+      currentunit = unit;
 
-            lastUnit=now;
+      count = 0;
+      sum = 0;
+    }
+  }
 
-            count=0;
-            sum=0;
-        }
+  @Override
+  public void measure(int latency) {
+    checkEndOfUnit(false);
+
+    count++;
+    sum += latency;
+    totallatency += latency;
+    operations++;
+    windowoperations++;
+    windowtotallatency += latency;
+
+    if (latency > max) {
+      max = latency;
     }
 
-    @Override
-    public void measure(int latency)
-    {
-        checkEndOfUnit(false);
-
-        count++;
-        sum+=latency;
-        totallatency+=latency;
-        operations++;
-        windowoperations++;
-        windowtotallatency+=latency;
-
-        if (latency>max)
-        {
-            max=latency;
-        }
-
-        if ( (latency<min) || (min<0) )
-        {
-            min=latency;
-        }
+    if ((latency < min) || (min < 0)) {
+      min = latency;
     }
+  }
 
 
-    @Override
-    public void exportMeasurements(MeasurementsExporter exporter) throws IOException
-    {
-        checkEndOfUnit(true);
+  @Override
+  public void exportMeasurements(MeasurementsExporter exporter) throws IOException {
+    checkEndOfUnit(true);
 
-        exporter.write(getName(), "Operations", operations);
-        exporter.write(getName(), "AverageLatency(us)", (((double)totallatency)/((double)operations)));
-        exporter.write(getName(), "MinLatency(us)", min);
-        exporter.write(getName(), "MaxLatency(us)", max);
+    exporter.write(getName(), "Operations", operations);
+    exporter.write(getName(), "AverageLatency(us)", (((double) totallatency) / ((double) operations)));
+    exporter.write(getName(), "MinLatency(us)", min);
+    exporter.write(getName(), "MaxLatency(us)", max);
 
-        //TODO: 95th and 99th percentile latency
+    // TODO: 95th and 99th percentile latency
 
-        for (Integer I : returncodes.keySet())
-        {
-            int[] val=returncodes.get(I);
-            exporter.write(getName(), "Return="+I, val[0]);
-        }
-
-        for (SeriesUnit unit : _measurements)
-        {
-            exporter.write(getName(), Double.toString(unit.time/1000.0) + " ms", unit.average);
-        }
+    exportStatusCounts(exporter);
+    for (SeriesUnit unit : measurements) {
+      exporter.write(getName(), Long.toString(unit.time), unit.average);
     }
+  }
 
-    @Override
-    public void reportReturnCode(int code) {
-        Integer Icode=code;
-        if (!returncodes.containsKey(Icode))
-        {
-            int[] val=new int[1];
-            val[0]=0;
-            returncodes.put(Icode,val);
-        }
-        returncodes.get(Icode)[0]++;
-
+  @Override
+  public String getSummary() {
+    if (windowoperations == 0) {
+      return "";
     }
+    DecimalFormat d = new DecimalFormat("#.##");
+    double report = ((double) windowtotallatency) / ((double) windowoperations);
+    windowtotallatency = 0;
+    windowoperations = 0;
+    return "[" + getName() + " AverageLatency(us)=" + d.format(report) + "]";
+  }
 
-    @Override
-    public String getSummary() {
-        if (windowoperations==0)
-        {
-            return "";
-        }
-        DecimalFormat d = new DecimalFormat("#.##");
-        double report=((double)windowtotallatency)/((double)windowoperations);
-        windowtotallatency=0;
-        windowoperations=0;
-        return "["+getName()+" AverageLatency(us)="+d.format(report)+"]";
-    }
-
-    @Override
-    public boolean isEmpty()
-    {
-      return count==0;
-    }
 }
