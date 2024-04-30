@@ -56,6 +56,7 @@ public class DBWrapper extends DB {
   public DBWrapper(final DB db, final Tracer tracer) {
     this.db = db;
     measurements = Measurements.getMeasurements();
+    
     this.tracer = tracer;
     final String simple = db.getClass().getSimpleName();
     scopeStringCleanup = simple + "#cleanup";

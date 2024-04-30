@@ -142,5 +142,4 @@ public class OneMeasurementTimeSeries extends OneMeasurement {
     windowoperations = 0;
     return "[" + getName() + " AverageLatency(us)=" + d.format(report) + "]";
   }
-
 }

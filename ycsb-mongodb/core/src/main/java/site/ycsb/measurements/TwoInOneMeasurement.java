@@ -72,5 +72,4 @@ public class TwoInOneMeasurement extends OneMeasurement {
   public String getSummary() {
     return thing1.getSummary() + "\n" + thing2.getSummary();
   }
-
 }

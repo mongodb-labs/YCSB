@@ -848,6 +848,10 @@ public class CoreWorkload extends Workload {
     }
   }
 
+  static void addPortion(DiscreteGenerator operationChooser, String operation, double portion) {
+      System.out.println("[WORKLOAD], " + operation + ", " + portion + "%.");
+      operationChooser.addValue(portion, operation);
+  }
   /**
    * Creates a weighted discrete values with database operations for a workload to perform.
    * Weights/proportions are read from the properties list and defaults are used
@@ -874,25 +878,27 @@ public class CoreWorkload extends Workload {
         READMODIFYWRITE_PROPORTION_PROPERTY, READMODIFYWRITE_PROPORTION_PROPERTY_DEFAULT));
 
     final DiscreteGenerator operationchooser = new DiscreteGenerator();
+    
     if (readproportion > 0) {
-      operationchooser.addValue(readproportion, "READ");
+      addPortion(operationchooser, "READ", readproportion);
     }
 
     if (updateproportion > 0) {
-      operationchooser.addValue(updateproportion, "UPDATE");
+      addPortion(operationchooser, "UPDATE", updateproportion);
     }
 
     if (insertproportion > 0) {
-      operationchooser.addValue(insertproportion, "INSERT");
+      addPortion(operationchooser, "INSERT", insertproportion);
     }
 
     if (scanproportion > 0) {
-      operationchooser.addValue(scanproportion, "SCAN");
+      addPortion(operationchooser, "SCAN", scanproportion);
     }
 
     if (readmodifywriteproportion > 0) {
-      operationchooser.addValue(readmodifywriteproportion, "READMODIFYWRITE");
+      addPortion(operationchooser, "READMODIFYWRITE", readmodifywriteproportion);
     }
+
     return operationchooser;
   }
 }
