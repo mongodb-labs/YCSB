@@ -23,7 +23,9 @@ import java.lang.management.OperatingSystemMXBean;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Utility functions.
@@ -222,11 +224,70 @@ public final class Utils {
    */
   public static <T> T [] shuffleArray(final T[] array) {
     for (int i = array.length -1; i > 0; i--) {
-      final int idx = ThreadLocalRandom.current().nextInt(i + 1);
+      final int idx = Utils.localRandom().nextInt(i + 1);
       final T temp = array[idx];
       array[idx] = array[i];
       array[i] = temp;
     }
     return array;
+  }
+
+  /**
+   * Seeded property, it can only be set once and defaults to false.
+   */
+  private static Boolean seeded;
+  private static long initalSeed = 0;
+  public static void setSeeded(boolean seeded, long seed) {
+    if (Utils.seeded == null) {
+      Utils.seeded = seeded;
+      Utils.initalSeed = seed;
+      Utils._seed.set(seed);
+    }
+  }
+  public static boolean isSeeded() {
+    return  Utils.seeded != null && Utils.seeded;
+  }
+
+  /**
+   * When the Local {@link Random} instance supports seeding then set the seed. This does nothing
+   * when seeding is not supported.
+   *
+   * @param seed The value to use as a seed.
+   */
+  public static void seedLocalRandom(long seed) {
+    Random rand = threadLocalRandom.get();
+    if (isSeeded()) {
+      rand.setSeed(seed);
+    }
+  }
+
+  /**
+   * An atomic long to use as the initial seed for a thread.
+   */
+  private static final AtomicLong _seed = new AtomicLong();
+
+  private static final ThreadLocal<Random> threadLocalRandom =
+  new ThreadLocal<Random>() {
+      @Override public Random initialValue() {
+        long seed = _seed.getAndIncrement();
+        if (seed == initalSeed) {
+          System.out.println(isSeeded() ? "[PRNG] Random(" + seed + ")" : "[PRNG] ThreadLocalRandom");
+        }
+        if (isSeeded()) {
+          return new Random(seed);
+        }
+        return ThreadLocalRandom.current();
+      }
+  };
+
+  /**
+   * Add support for a seeded PRNG.
+   * When the SeededLocalRandom property is set this method return a Random seeded with the current thread id, otherwise
+   * the ThreadLocalRandom instance is returned.
+   *
+   * @return A random generator for this thread.
+   */
+  public static Random localRandom() {
+      return threadLocalRandom.get();
   }
 }

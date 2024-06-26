@@ -25,7 +25,6 @@ import java.util.Random;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.Vector;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 import site.ycsb.ByteIterator;
@@ -736,7 +735,7 @@ public class TimeSeriesWorkload extends Workload {
   protected void doTransactionRead(final DB db, Object threadstate) {
     final ThreadState state = (ThreadState) threadstate;
     final String keyname = keys[keychooser.nextValue().intValue()];
-    final Random random = ThreadLocalRandom.current();
+    final Random random = Utils.localRandom();
     int offsets = state.queryOffsetGenerator.nextValue().intValue();
     //int offsets = random.nextInt(maxOffsets - 1);
     final long startTimestamp;
@@ -798,7 +797,7 @@ public class TimeSeriesWorkload extends Workload {
   
   protected void doTransactionScan(final DB db, Object threadstate) {
     final ThreadState state = (ThreadState) threadstate;
-    final Random random = ThreadLocalRandom.current();
+    final Random random = Utils.localRandom();
     final String keyname = keys[random.nextInt(keys.length)];
     
     // choose a random scan length
@@ -847,7 +846,7 @@ public class TimeSeriesWorkload extends Workload {
   
   protected void doTransactionDelete(final DB db, Object threadstate) {
     final ThreadState state = (ThreadState) threadstate;
-    final Random random = ThreadLocalRandom.current();
+    final Random random = Utils.localRandom();
     final StringBuilder buf = new StringBuilder().append(keys[random.nextInt(keys.length)]);
     
     int offsets = random.nextInt(maxOffsets - 1);
@@ -1173,7 +1172,7 @@ public class TimeSeriesWorkload extends Workload {
      * @return The next key to write.
      */
     protected String nextDataPoint(final Map<String, ByteIterator> map, final boolean isInsert) {
-      final Random random = ThreadLocalRandom.current();
+      final Random random = Utils.localRandom();
       int iterations = sparsity <= 0 ? 1 : random.nextInt((int) ((double) perKeyCardinality * sparsity));
       if (iterations < 1) {
         iterations = 1;

@@ -79,6 +79,30 @@ public class CoreWorkload extends Workload {
   protected String table;
 
   /**
+   * The name of the use seed property.
+   */
+  public static final String SEEDED_PROPERTY = "useseed";
+
+  /**
+   * The default value for useseed.
+   */
+  public static final String SEEDED_PROPERTY_DEFAULT = "false";
+
+  protected boolean useSeed;
+
+  /**
+   * The name of the initial seed property. Only applied if useseed is also set.
+   */
+  public static final String INITIAL_SEED_PROPERTY = "initialseed";
+
+  /**
+   * The default initial seed value.
+   */
+  public static final String INITIAL_SEED_PROPERTY_DEFAULT = "0";
+
+  protected long seed;
+
+  /**
    * The name of the property for the number of fields in a record.
    */
   public static final String FIELD_COUNT_PROPERTY = "fieldcount";
@@ -420,6 +444,9 @@ public class CoreWorkload extends Workload {
    */
   @Override
   public void init(Properties p) throws WorkloadException {
+    useSeed = Boolean.parseBoolean(p.getProperty(SEEDED_PROPERTY, SEEDED_PROPERTY_DEFAULT));
+    seed = Long.parseLong(p.getProperty(INITIAL_SEED_PROPERTY, INITIAL_SEED_PROPERTY_DEFAULT));
+    Utils.setSeeded(useSeed, seed);
     table = p.getProperty(TABLENAME_PROPERTY, TABLENAME_PROPERTY_DEFAULT);
 
     fieldcount =
@@ -612,6 +639,7 @@ public class CoreWorkload extends Workload {
   @Override
   public boolean doInsert(DB db, Object threadstate) {
     int keynum = keysequence.nextValue().intValue();
+    Utils.seedLocalRandom(keynum);
     String dbkey = CoreWorkload.buildKeyName(keynum, zeropadding, orderedinserts);
     HashMap<String, ByteIterator> values = buildValues(dbkey);
 

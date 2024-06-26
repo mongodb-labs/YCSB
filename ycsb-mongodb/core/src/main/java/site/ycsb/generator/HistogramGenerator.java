@@ -20,7 +20,7 @@ import java.io.BufferedReader;
 import java.io.FileReader;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.concurrent.ThreadLocalRandom;
+import site.ycsb.Utils;
 
 /**
  * Generate integers according to a histogram distribution.  The histogram
@@ -88,7 +88,7 @@ public class HistogramGenerator extends NumberGenerator {
 
   @Override
   public Long nextValue() {
-    int number = ThreadLocalRandom.current().nextInt((int) area);
+    int number = Utils.localRandom().nextInt((int) area);
     int i;
 
     for (i = 0; i < (buckets.length - 1); i++) {
