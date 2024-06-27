@@ -237,6 +237,12 @@ public final class Utils {
    */
   private static Boolean seeded;
   private static long initalSeed = 0;
+
+  /**
+   * An atomic long to use as the initial seed for a thread.
+   */
+  private static final AtomicLong _seed = new AtomicLong();
+
   public static void setSeeded(boolean seeded, long seed) {
     if (Utils.seeded == null) {
       Utils.seeded = seeded;
@@ -261,20 +267,20 @@ public final class Utils {
     }
   }
 
-  /**
-   * An atomic long to use as the initial seed for a thread.
-   */
-  private static final AtomicLong _seed = new AtomicLong();
-
+  public static final ThreadLocal<Long> threadId = new ThreadLocal<>();
+  private static final ThreadLocal<Long> threadSeed = new ThreadLocal<>();
   private static final ThreadLocal<Random> threadLocalRandom =
   new ThreadLocal<Random>() {
       @Override public Random initialValue() {
-        long seed = _seed.getAndIncrement();
-        if (seed == initalSeed) {
-          System.out.println(isSeeded() ? "[PRNG] Random(" + seed + ")" : "[PRNG] ThreadLocalRandom");
+        threadSeed.set(_seed.getAndIncrement());
+        threadId.set(threadSeed.get() - initalSeed);
+
+        // Print out the first Thread and seed.
+        if (threadSeed.get() == initalSeed) {
+          System.out.println(String.format("[%04d] %s(%s)", threadId.get(), isSeeded() ? "Random": "ThreadLocalRandom", isSeeded() ? threadSeed.get() : ""));
         }
         if (isSeeded()) {
-          return new Random(seed);
+          return new Random(threadSeed.get());
         }
         return ThreadLocalRandom.current();
       }
