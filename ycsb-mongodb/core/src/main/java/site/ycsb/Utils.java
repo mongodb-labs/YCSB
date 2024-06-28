@@ -232,57 +232,47 @@ public final class Utils {
     return array;
   }
 
-  /**
-   * Seeded property, it can only be set once and defaults to false.
-   */
-  private static Boolean seeded;
-  private static long initalSeed = 0;
+  public static class RandomGeneratorState {
+    /**
+     * An atomic long to use as the initial seed for a thread.
+     */
+    private static final AtomicLong _seed = new AtomicLong();
 
-  /**
-   * An atomic long to use as the initial seed for a thread.
-   */
-  private static final AtomicLong _seed = new AtomicLong();
+    /**
+     * Seeded property, it can only be set once and defaults to false.
+     */
+    private static Boolean seeded;
+    private static long initialSeed = 0;
 
-  public static void setSeeded(boolean seeded, long seed) {
-    if (Utils.seeded == null) {
-      Utils.seeded = seeded;
-      Utils.initalSeed = seed;
-      Utils._seed.set(seed);
+    public static void setSeeded(boolean seeded, long seed) {
+      if (RandomGeneratorState.seeded == null) {
+        RandomGeneratorState.seeded = seeded;
+        RandomGeneratorState.initialSeed = seed;
+      }
+    }
+    public static boolean isSeeded() {
+      return  RandomGeneratorState.seeded != null && RandomGeneratorState.seeded;
+    }
+
+    final Random random;
+    final long tid;
+
+    RandomGeneratorState() {
+      long seed = _seed.getAndIncrement();
+      this.tid = seed - RandomGeneratorState.initialSeed;
+      if (RandomGeneratorState.isSeeded()) {
+        random = new Random(seed);
+      } else {
+        random = ThreadLocalRandom.current();
+      }
     }
   }
-  public static boolean isSeeded() {
-    return  Utils.seeded != null && Utils.seeded;
-  }
 
-  /**
-   * When the Local {@link Random} instance supports seeding then set the seed. This does nothing
-   * when seeding is not supported.
-   *
-   * @param seed The value to use as a seed.
-   */
-  public static void seedLocalRandom(long seed) {
-    Random rand = threadLocalRandom.get();
-    if (isSeeded()) {
-      rand.setSeed(seed);
-    }
-  }
-
-  public static final ThreadLocal<Long> threadId = new ThreadLocal<>();
-  private static final ThreadLocal<Long> threadSeed = new ThreadLocal<>();
-  private static final ThreadLocal<Random> threadLocalRandom =
-  new ThreadLocal<Random>() {
-      @Override public Random initialValue() {
-        threadSeed.set(_seed.getAndIncrement());
-        threadId.set(threadSeed.get() - initalSeed);
-
-        // Print out the first Thread and seed.
-        if (threadSeed.get() == initalSeed) {
-          System.out.println(String.format("[%04d] %s(%s)", threadId.get(), isSeeded() ? "Random": "ThreadLocalRandom", isSeeded() ? threadSeed.get() : ""));
-        }
-        if (isSeeded()) {
-          return new Random(threadSeed.get());
-        }
-        return ThreadLocalRandom.current();
+  private static final ThreadLocal<RandomGeneratorState> threadLocalState =
+  new ThreadLocal<RandomGeneratorState>() {
+      @Override public RandomGeneratorState initialValue() {
+        // return new RandomGeneratorState(_seed.getAndIncrement());
+        return new RandomGeneratorState();
       }
   };
 
@@ -293,7 +283,18 @@ public final class Utils {
    *
    * @return A random generator for this thread.
    */
+  public static long threadId() {
+      return threadLocalState.get().tid;
+  }
+
+  /**
+   * Add support for a seeded PRNG.
+   * When the SeededLocalRandom property is set this method return a Random seeded with the current thread id, otherwise
+   * the ThreadLocalRandom instance is returned.
+   *
+   * @return A random generator for this thread.
+   */
   public static Random localRandom() {
-      return threadLocalRandom.get();
+      return threadLocalState.get().random;
   }
 }

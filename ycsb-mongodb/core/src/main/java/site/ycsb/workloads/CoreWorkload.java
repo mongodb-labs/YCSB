@@ -25,6 +25,9 @@ import site.ycsb.measurements.Measurements;
 import java.io.IOException;
 import java.util.*;
 
+import static site.ycsb.Client.THREAD_COUNT_PROPERTY;
+import static site.ycsb.Utils.RandomGeneratorState.setSeeded;
+
 /**
  * The core benchmark scenario. Represents a set of clients doing simple CRUD operations. The
  * relative proportion of different kinds of operations, and other properties of the workload,
@@ -63,6 +66,10 @@ import java.util.*;
  * order ("hashed") (default: hashed)
  * <LI><b>fieldnameprefix</b>: what should be a prefix for field names, the shorter may decrease the
  * required storage size (default: "field")
+ * <LI><b>useseed</b>: use a seeded Random (default: "false")
+ * <LI><b>initialseed</b>: what initial seed is used, each thread will increment the initial seed
+ * before use (default: "0")
+ * <LI><b>threadcount</b>: the number of threads (default: "1")
  * </ul>
  */
 public class CoreWorkload extends Workload {
@@ -88,8 +95,6 @@ public class CoreWorkload extends Workload {
    */
   public static final String SEEDED_PROPERTY_DEFAULT = "false";
 
-  protected boolean useSeed;
-
   /**
    * The name of the initial seed property. Only applied if useseed is also set.
    */
@@ -99,8 +104,6 @@ public class CoreWorkload extends Workload {
    * The default initial seed value.
    */
   public static final String INITIAL_SEED_PROPERTY_DEFAULT = "0";
-
-  protected long seed;
 
   /**
    * The name of the property for the number of fields in a record.
@@ -444,9 +447,10 @@ public class CoreWorkload extends Workload {
    */
   @Override
   public void init(Properties p) throws WorkloadException {
-    useSeed = Boolean.parseBoolean(p.getProperty(SEEDED_PROPERTY, SEEDED_PROPERTY_DEFAULT));
-    seed = Long.parseLong(p.getProperty(INITIAL_SEED_PROPERTY, INITIAL_SEED_PROPERTY_DEFAULT));
-    Utils.setSeeded(useSeed, seed);
+    long threads = Long.parseLong(p.getProperty(THREAD_COUNT_PROPERTY));
+    boolean useSeed = Boolean.parseBoolean(p.getProperty(SEEDED_PROPERTY, SEEDED_PROPERTY_DEFAULT));
+    long seed = Long.parseLong(p.getProperty(INITIAL_SEED_PROPERTY, INITIAL_SEED_PROPERTY_DEFAULT));
+    setSeeded(useSeed, seed);
     table = p.getProperty(TABLENAME_PROPERTY, TABLENAME_PROPERTY_DEFAULT);
 
     fieldcount =
@@ -512,7 +516,12 @@ public class CoreWorkload extends Workload {
       orderedinserts = true;
     }
 
-    keysequence = new CounterGenerator(insertstart);
+    // For the seeded case create a generator that creates a stream of keys / per thread.
+    if(Utils.RandomGeneratorState.isSeeded()) {
+      keysequence = new ThreadedCounterGenerator(insertstart, threads);
+    } else {
+      keysequence = new CounterGenerator(insertstart);
+    }
     operationchooser = createOperationGenerator(p);
 
     transactioninsertkeysequence = new AcknowledgedCounterGenerator(recordcount);
@@ -639,7 +648,6 @@ public class CoreWorkload extends Workload {
   @Override
   public boolean doInsert(DB db, Object threadstate) {
     int keynum = keysequence.nextValue().intValue();
-    Utils.seedLocalRandom(keynum);
     String dbkey = CoreWorkload.buildKeyName(keynum, zeropadding, orderedinserts);
     HashMap<String, ByteIterator> values = buildValues(dbkey);
 
