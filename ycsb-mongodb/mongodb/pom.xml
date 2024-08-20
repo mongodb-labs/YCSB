@@ -24,6 +24,19 @@
       <artifactId>core</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <!-- mongodb-driver-sync defines snappy-java and zstd-jni dependencies as optional.
+         They need to be repeated here to support compression. See:
+         https://www.mongodb.com/docs/drivers/java/sync/current/fundamentals/connection/network-compression/ -->
+    <dependency>
+      <groupId>org.xerial.snappy</groupId>
+      <artifactId>snappy-java</artifactId>
+      <version>${snappy.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.github.luben</groupId>
+      <artifactId>zstd-jni</artifactId>
+      <version>${zstd.version}</version>
+    </dependency>
   </dependencies>
  
   <build>
