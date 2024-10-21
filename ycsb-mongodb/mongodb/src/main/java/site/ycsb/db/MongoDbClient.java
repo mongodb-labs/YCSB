@@ -42,6 +42,7 @@ import org.bson.BsonInt64;
 import org.bson.BsonString;
 import org.bson.Document;
 import org.bson.UuidRepresentation;
+import org.bson.conversions.Bson;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -686,21 +687,8 @@ public class MongoDbClient extends DB {
     public Status read(String table, String key, Set<String> fields,
             Map<String, ByteIterator> result) {
         try {
-            MongoCollection<Document> collection = db[serverCounter++%db.length].getCollection(table);
-            Document q = new Document("_id", key);
-            Document fieldsToReturn;
-
-            Document queryResult;
-            if (fields != null) {
-                fieldsToReturn = new Document();
-                for (final String field : fields) {
-                    fieldsToReturn.put(field, INCLUDE);
-                }
-                queryResult = collection.find(q).projection(fieldsToReturn).first();
-            }
-            else {
-                queryResult = collection.find(q).first();
-            }
+            Bson command = new BsonDocument("dbStats", new BsonInt64(1));
+            Document queryResult = db[serverCounter++%db.length].runCommand(command);
 
             if (queryResult != null) {
                 // TODO: this is wrong.  It is totally violating the expected type of the values in result, which is ByteIterator
