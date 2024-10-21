@@ -687,7 +687,7 @@ public class MongoDbClient extends DB {
     public Status read(String table, String key, Set<String> fields,
             Map<String, ByteIterator> result) {
         try {
-            Bson command = new BsonDocument("dbStats", new BsonInt64(1));
+            Bson command = new BsonDocument("ping", new BsonInt64(1));
             Document queryResult = db[serverCounter++%db.length].runCommand(command);
 
             if (queryResult != null) {
