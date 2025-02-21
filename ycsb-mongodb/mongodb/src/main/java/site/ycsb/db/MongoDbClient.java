@@ -95,6 +95,8 @@ public class MongoDbClient extends DB {
 
     private static int serverCounter = 0;
 
+    private static String connectionString;
+
     /** The default write concern for the test. */
     private static WriteConcern writeConcern;
 
@@ -378,6 +380,7 @@ public class MongoDbClient extends DB {
             // initialize MongoDb driver
             Properties props = getProperties();
             String urls = props.getProperty("mongodb.url", "mongodb://localhost:27017");
+            connectionString = urls;
 
             /* Credentials */
             database = props.getProperty("mongodb.database", "ycsb");
@@ -659,30 +662,9 @@ public class MongoDbClient extends DB {
     public Status read(String table, String key, Set<String> fields,
             Map<String, ByteIterator> result) {
         try {
-            MongoCollection<Document> collection = db[serverCounter++%db.length].getCollection(table);
-            Document q = new Document("_id", key);
-            Document fieldsToReturn;
-
-            Document queryResult;
-            if (fields != null) {
-                fieldsToReturn = new Document();
-                for (final String field : fields) {
-                    fieldsToReturn.put(field, INCLUDE);
-                }
-                queryResult = collection.find(q).projection(fieldsToReturn).first();
-            }
-            else {
-                queryResult = collection.find(q).first();
-            }
-
-            if (queryResult != null) {
-                // TODO: this is wrong.  It is totally violating the expected type of the values in result, which is ByteIterator
-                // TODO: somewhere up the chain this should be resulting in a ClassCastException
-                result.putAll(new LinkedHashMap(queryResult));
-                return Status.OK;
-            }
-            System.err.println("No results returned for key " + key);
-            return Status.ERROR;
+            MongoClient mongoClient = MongoClients.create(connectionString);
+            mongoClient.close();
+            return Status.OK;
         }
         catch (Exception e) {
             System.err.println(e.toString());
