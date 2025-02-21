@@ -311,33 +311,6 @@ public class MongoDbClient extends DB {
                 // Need a schema that references the new data key
                 BsonDocument.parse(generateSchema(base64DataKeyId, numFields))));
         }
-        else if (encryptionType == Encryption.QUERYABLE) {
-            MongoClient client = MongoClients.create(clientSettings);
-
-            if (!isCollectionCreated(client, database, collName)) {
-                CreateCollectionOptions options = new CreateCollectionOptions();
-                BsonDocument encryptedFieldsDocument = generateEncryptedFieldsDocument(keyCollection, clientEncryption, numFields);
-
-                autoEncryptionSettingsBuilder.encryptedFieldsMap(
-                    Collections.singletonMap(collNamespace, encryptedFieldsDocument));
-
-                options.encryptedFields(encryptedFieldsDocument);
-
-                // This creates the encrypted data collection (EDC) and the auxilliary
-                // collections, as well as the index on the __safeContent__ field.
-                client.getDatabase(database).createCollection(collName, options);
-
-                if (isSharded) {
-                    BsonDocument enableShardingCmd = new BsonDocument("enableSharding", new BsonString(database));
-                    client.getDatabase("admin").runCommand(enableShardingCmd);
-
-                    BsonDocument shardCollCmd = new BsonDocument("shardCollection", new BsonString(collNamespace))
-                        .append("key", new BsonDocument("_id", new BsonString("hashed")));
-                    client.getDatabase("admin").runCommand(shardCollCmd);
-                }
-            }
-            return autoEncryptionSettingsBuilder.build();
-        }
 
         if (remote_schema) {
             MongoClient client = MongoClients.create(keyVaultUrls);
