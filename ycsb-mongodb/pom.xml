@@ -66,6 +66,7 @@
   <modules>
     <module>core</module>
     <module>mongodb</module>
+    <module>postgrenosql</module>
     <!--<module>distribution</module>-->
   </modules>
 

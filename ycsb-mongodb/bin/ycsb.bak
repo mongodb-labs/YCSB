@@ -16,16 +16,13 @@
 # LICENSE file.
 #
 
-from __future__ import print_function
 import errno
 import fnmatch
 import io
 import os
-import re
 import shlex
 import sys
 import subprocess
-import tempfile
 import argparse
 
 BASE_URL = "https://github.com/brianfrankcooper/YCSB/tree/master/"
