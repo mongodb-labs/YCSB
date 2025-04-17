@@ -51,10 +51,16 @@ public class TerminatorThread extends Thread {
     System.err.println("Maximum time elapsed. Requesting stop for the workload.");
     workload.requestStop();
     System.err.println("Stop requested for workload. Now Joining!");
+    long startTime = System.currentTimeMillis();
     for (Thread t : threads) {
       while (t.isAlive()) {
         try {
           t.join(waitTimeOutInMS);
+
+          long elapsedTime = System.currentTimeMillis() - startTime;
+          if (elapsedTime > 3 * maxExecutionTime * 1000) {
+            System.exit(1);
+          }
           if (t.isAlive()) {
             System.out.println("Still waiting for thread " + t.getName() + " to complete. " +
                 "Workload status: " + workload.isStopRequested());
