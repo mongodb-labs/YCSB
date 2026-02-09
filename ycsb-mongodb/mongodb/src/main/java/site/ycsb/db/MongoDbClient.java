@@ -105,6 +105,22 @@ public class MongoDbClient extends DB {
     private static Integer BATCHSIZE;
     private List<Document> insertList = null;
     private Integer insertCount = 0;
+    private String insertTable = null;
+
+    /** Allow reading batches of documents in one read operation */
+    private static Integer READBATCHSIZE;
+    private List<String> readKeyList = null;
+    private Integer readCount = 0;
+    private String readTable = null;
+    /** Counter to track keys to skip in range query mode */
+    private Integer rangeReadCount = 0;
+
+    /** Properties for range query optimization */
+    private static String requestDistribution;
+    private static String insertOrder;
+    private static int zeroPadding;
+    private static long recordCount;
+    private static boolean useRangeQuery = false;
 
     /** The database to access. */
     private static String database;
@@ -121,6 +137,9 @@ public class MongoDbClient extends DB {
     private static final String algorithm = "AEAD_AES_256_CBC_HMAC_SHA_512-Random";
 
     private static boolean isSharded = false;
+
+    /** Enable query logging to print MongoDB queries to stdout */
+    private static boolean queryLogging = false;
 
     enum Encryption {
         UNENCRYPTED,
@@ -435,6 +454,26 @@ public class MongoDbClient extends DB {
             final String batchSizeString = props.getProperty("batchsize", "1");
             BATCHSIZE = Integer.parseInt(batchSizeString);
 
+            // Set read batchsize, default 1 - number of documents to read per read operation
+            final String readBatchSizeString = props.getProperty("readbatchsize", "1");
+            READBATCHSIZE = Integer.parseInt(readBatchSizeString);
+
+            // Properties for range query optimization
+            requestDistribution = props.getProperty("requestdistribution", "uniform");
+            insertOrder = props.getProperty("insertorder", "hashed");
+            zeroPadding = Integer.parseInt(props.getProperty("zeropadding", "1"));
+            recordCount = Long.parseLong(props.getProperty("recordcount", "0"));
+
+            // Determine if range query optimization can be used
+            useRangeQuery = canUseRangeQuery();
+            if (READBATCHSIZE > 1) {
+                if (useRangeQuery) {
+                    System.out.println("Read batch mode: range query (sequential + ordered + proper zeropadding)");
+                } else {
+                    System.out.println("Read batch mode: $in query");
+                }
+            }
+
             // allow "string" in addition to "byte" array for data type
             datatype = props.getProperty("datatype","binData");
 
@@ -497,6 +536,9 @@ public class MongoDbClient extends DB {
 
             // sharded
             isSharded = Boolean.parseBoolean(props.getProperty("mongodb.sharded", "false"));
+
+            // query logging - log all MongoDB queries to stdout
+            queryLogging = Boolean.parseBoolean(props.getProperty("mongodb.queryLogging", "false"));
 
             // encryption - FLE or Queryable Encryption
             boolean use_fle = Boolean.parseBoolean(props.getProperty("mongodb.fle", "false"));
@@ -577,6 +619,25 @@ public class MongoDbClient extends DB {
      */
     @Override
     public void cleanup() {
+        // Flush any remaining batched inserts
+        if (insertCount > 0 && insertList != null && insertTable != null) {
+            try {
+                MongoCollection<Document> collection = db[serverCounter++%db.length].getCollection(insertTable);
+                if (queryLogging) {
+                    StringBuilder keys = new StringBuilder();
+                    for (Document doc : insertList) {
+                        if (keys.length() > 0) keys.append(", ");
+                        keys.append("\"" + doc.get("_id") + "\"");
+                    }
+                    System.out.println("[QUERY LOG] " + insertTable + ".insertMany([{_id: " + keys.toString().replace(", ", "}, {_id: ") + "}]) (flush)");
+                }
+                collection.insertMany(insertList);
+                insertCount = 0;
+            } catch (Exception e) {
+                System.err.println("Exception while flushing remaining batch inserts: " + e.getMessage());
+            }
+        }
+
         if (initCount.decrementAndGet() <= 0) {
             for (MongoClient mongoClient : mongo) {
                 try {
@@ -597,6 +658,22 @@ public class MongoDbClient extends DB {
     }
 
     /**
+     * Check if range query optimization can be used for batch reads.
+     * Requires: sequential distribution, ordered inserts, and adequate zeropadding.
+     */
+    private static boolean canUseRangeQuery() {
+        if (!"sequential".equals(requestDistribution)) {
+            return false;
+        }
+        if (!"ordered".equals(insertOrder)) {
+            return false;
+        }
+        // Check if zeropadding is sufficient for lexicographic ordering
+        int digitsInRecordCount = recordCount > 0 ? (int) Math.ceil(Math.log10(recordCount + 1)) : 1;
+        return zeroPadding >= digitsInRecordCount;
+    }
+
+    /**
      * Delete a record from the database.
      *
      * @param table The name of the table
@@ -608,6 +685,9 @@ public class MongoDbClient extends DB {
         try {
             MongoCollection<Document> collection = db[serverCounter++%db.length].getCollection(table);
             Document q = new Document("_id", key);
+            if (queryLogging) {
+                System.out.println("[QUERY LOG] " + table + ".deleteMany(" + q.toJson() + ")");
+            }
             collection.deleteMany(q);
             return Status.OK;
         }
@@ -630,7 +710,6 @@ public class MongoDbClient extends DB {
     @Override
     public Status insert(String table, String key,
             Map<String, ByteIterator> values) {
-        MongoCollection<Document> collection = db[serverCounter++%db.length].getCollection(table);
         Document r = new Document("_id", key);
         for (String k : values.keySet()) {
             byte[] data = overrideDataIfDiscrete(k, values.get(k).toArray());
@@ -642,6 +721,10 @@ public class MongoDbClient extends DB {
         }
         if (BATCHSIZE == 1 ) {
            try {
+             MongoCollection<Document> collection = db[serverCounter++%db.length].getCollection(table);
+             if (queryLogging) {
+                 System.out.println("[QUERY LOG] " + table + ".insertOne({_id: \"" + key + "\", ...})");
+             }
              collection.insertOne(r);
              return Status.OK;
            }
@@ -653,13 +736,23 @@ public class MongoDbClient extends DB {
         }
         if (insertCount == 0) {
            insertList = new ArrayList<>(BATCHSIZE);
+           insertTable = table;
         }
         insertCount++;
         insertList.add(r);
         if (insertCount < BATCHSIZE) {
-            return Status.OK;
+            return Status.BATCHED_OK;
         } else {
            try {
+             MongoCollection<Document> collection = db[serverCounter++%db.length].getCollection(insertTable);
+             if (queryLogging) {
+                 StringBuilder keys = new StringBuilder();
+                 for (Document doc : insertList) {
+                     if (keys.length() > 0) keys.append(", ");
+                     keys.append("\"" + doc.get("_id") + "\"");
+                 }
+                 System.out.println("[QUERY LOG] " + insertTable + ".insertMany([{_id: " + keys.toString().replace(", ", "}, {_id: ") + "}])");
+             }
              collection.insertMany(insertList);
              insertCount = 0;
              return Status.OK;
@@ -686,30 +779,153 @@ public class MongoDbClient extends DB {
     public Status read(String table, String key, Set<String> fields,
             Map<String, ByteIterator> result) {
         try {
-            MongoCollection<Document> collection = db[serverCounter++%db.length].getCollection(table);
-            Document q = new Document("_id", key);
-            Document fieldsToReturn;
+            if (READBATCHSIZE == 1) {
+                // Original single document read
+                MongoCollection<Document> collection = db[serverCounter++%db.length].getCollection(table);
+                Document q = new Document("_id", key);
+                Document fieldsToReturn = null;
 
-            Document queryResult;
-            if (fields != null) {
-                fieldsToReturn = new Document();
-                for (final String field : fields) {
-                    fieldsToReturn.put(field, INCLUDE);
+                if (fields != null) {
+                    fieldsToReturn = new Document();
+                    for (final String field : fields) {
+                        fieldsToReturn.put(field, INCLUDE);
+                    }
                 }
-                queryResult = collection.find(q).projection(fieldsToReturn).first();
-            }
-            else {
-                queryResult = collection.find(q).first();
-            }
 
-            if (queryResult != null) {
-                // TODO: this is wrong.  It is totally violating the expected type of the values in result, which is ByteIterator
-                // TODO: somewhere up the chain this should be resulting in a ClassCastException
-                result.putAll(new LinkedHashMap(queryResult));
-                return Status.OK;
+                if (queryLogging) {
+                    System.out.println("[QUERY LOG] " + table + ".find(" + q.toJson() +
+                        (fieldsToReturn != null ? ", " + fieldsToReturn.toJson() : "") + ")");
+                }
+
+                Document queryResult;
+                if (fieldsToReturn != null) {
+                    queryResult = collection.find(q).projection(fieldsToReturn).first();
+                } else {
+                    queryResult = collection.find(q).first();
+                }
+
+                if (queryResult != null) {
+                    result.putAll(new LinkedHashMap(queryResult));
+                    return Status.OK;
+                }
+                System.err.println("No results returned for key " + key);
+                return Status.ERROR;
+            } else if (useRangeQuery) {
+                // Optimized path: range query for sequential + ordered + proper zeropadding
+                // Query on the first key of each batch, skip remaining keys
+                boolean doBatchRead = (rangeReadCount == 0);
+                rangeReadCount++;
+                if (rangeReadCount >= READBATCHSIZE) {
+                    rangeReadCount = 0;
+                }
+                if (!doBatchRead) {
+                    return Status.BATCHED_OK;
+                }
+
+                MongoCollection<Document> collection = db[serverCounter++%db.length].getCollection(table);
+                Document q = new Document("_id", new Document("$gte", key));
+                Document fieldsToReturn = null;
+
+                if (fields != null) {
+                    fieldsToReturn = new Document();
+                    for (final String field : fields) {
+                        fieldsToReturn.put(field, INCLUDE);
+                    }
+                }
+
+                if (queryLogging) {
+                    System.out.println("[QUERY LOG] " + table + ".find(" + q.toJson() +
+                        (fieldsToReturn != null ? ", " + fieldsToReturn.toJson() : "") +
+                        ").limit(" + READBATCHSIZE + ").batchSize(" + READBATCHSIZE + ")");
+                }
+
+                MongoCursor<Document> cursor;
+                if (fieldsToReturn != null) {
+                    cursor = collection.find(q).projection(fieldsToReturn).limit(READBATCHSIZE).batchSize(READBATCHSIZE).cursor();
+                } else {
+                    cursor = collection.find(q).limit(READBATCHSIZE).batchSize(READBATCHSIZE).cursor();
+                }
+
+                try {
+                    if (!cursor.hasNext()) {
+                        System.err.println("No results returned for key " + key);
+                        return Status.ERROR;
+                    }
+                    int count = 0;
+                    while (cursor.hasNext()) {
+                        Document doc = cursor.next();
+                        if (count == 0) {
+                            result.putAll(new LinkedHashMap(doc));
+                        }
+                        count++;
+                    }
+                    return Status.OK;
+                } finally {
+                    cursor.close();
+                }
+            } else {
+                // Standard path: accumulate keys and fetch with $in query to preserve distribution
+                if (readCount == 0) {
+                    readKeyList = new ArrayList<>(READBATCHSIZE);
+                    readTable = table;
+                }
+                readCount++;
+                readKeyList.add(key);
+
+                if (queryLogging) {
+                    System.out.println("[QUERY LOG] BATCH_ACCUMULATE key=\"" + key + "\" (" + readCount + "/" + READBATCHSIZE + ")");
+                }
+
+                if (readCount < READBATCHSIZE) {
+                    // Not enough keys yet, return OK without actually reading
+                    return Status.BATCHED_OK;
+                } else {
+                    // We have enough keys, do the batch read with $in query
+                    MongoCollection<Document> collection = db[serverCounter++%db.length].getCollection(readTable);
+                    Document q = new Document("_id", new Document("$in", readKeyList));
+                    Document fieldsToReturn = null;
+
+                    if (fields != null) {
+                        fieldsToReturn = new Document();
+                        for (final String field : fields) {
+                            fieldsToReturn.put(field, INCLUDE);
+                        }
+                    }
+
+                    if (queryLogging) {
+                        System.out.println("[QUERY LOG] " + readTable + ".find(" + q.toJson() +
+                            (fieldsToReturn != null ? ", " + fieldsToReturn.toJson() : "") + ")");
+                    }
+
+                    MongoCursor<Document> cursor;
+                    if (fieldsToReturn != null) {
+                        cursor = collection.find(q).projection(fieldsToReturn).cursor();
+                    } else {
+                        cursor = collection.find(q).cursor();
+                    }
+
+                    try {
+                        int count = 0;
+                        while (cursor.hasNext()) {
+                            Document doc = cursor.next();
+                            // Store the first document's fields in result for compatibility
+                            if (count == 0) {
+                                result.putAll(new LinkedHashMap(doc));
+                            }
+                            count++;
+                        }
+                        // Reset for next batch
+                        readCount = 0;
+                        if (count == 0) {
+                            System.err.println("No results returned for batch read");
+                            return Status.ERROR;
+                        }
+                        return Status.OK;
+                    } finally {
+                        cursor.close();
+                    }
+                }
             }
-            System.err.println("No results returned for key " + key);
-            return Status.ERROR;
         }
         catch (Exception e) {
             System.err.println(e.toString());
@@ -743,6 +959,9 @@ public class MongoDbClient extends DB {
                 }
             }
             u.put("$set", fieldsToSet);
+            if (queryLogging) {
+                System.out.println("[QUERY LOG] " + table + ".updateOne(" + q.toJson() + ", " + u.toJson() + ")");
+            }
             UpdateResult res = collection.updateOne(q, u);
             if (res.getMatchedCount() == 0) {
                 System.err.println("Nothing updated for key " + key);
@@ -782,6 +1001,11 @@ public class MongoDbClient extends DB {
                 for (final String field : fields) {
                     fieldsToReturn.put(field, INCLUDE);
                 }
+            }
+            if (queryLogging) {
+                System.out.println("[QUERY LOG] " + table + ".find(" + q.toJson() +
+                    (fieldsToReturn != null ? ", " + fieldsToReturn.toJson() : "") +
+                    ").sort(" + s.toJson() + ").limit(" + recordcount + ")");
             }
             cursor = collection.find(q).projection(fieldsToReturn).sort(s).limit(recordcount).cursor();
             if (!cursor.hasNext()) {
