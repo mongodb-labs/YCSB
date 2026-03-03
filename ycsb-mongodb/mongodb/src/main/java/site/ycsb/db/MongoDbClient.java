@@ -105,6 +105,7 @@ public class MongoDbClient extends DB {
     private static Integer BATCHSIZE;
     private List<Document> insertList = null;
     private Integer insertCount = 0;
+    private String bulkInsertTable = null;
 
     /** The database to access. */
     private static String database;
@@ -577,6 +578,20 @@ public class MongoDbClient extends DB {
      */
     @Override
     public void cleanup() {
+        if (insertCount > 0 && insertList != null && bulkInsertTable != null) {
+            try {
+                MongoCollection<Document> collection =
+                    db[serverCounter++ % db.length].getCollection(bulkInsertTable);
+                collection.insertMany(insertList);
+            } catch (Exception e) {
+                System.err.println("Exception while flushing remaining "
+                    + insertCount + " inserts during cleanup");
+                e.printStackTrace();
+            } finally {
+                insertCount = 0;
+                insertList = null;
+            }
+        }
         if (initCount.decrementAndGet() <= 0) {
             for (MongoClient mongoClient : mongo) {
                 try {
@@ -653,6 +668,7 @@ public class MongoDbClient extends DB {
         }
         if (insertCount == 0) {
            insertList = new ArrayList<>(BATCHSIZE);
+           bulkInsertTable = table;
         }
         insertCount++;
         insertList.add(r);
