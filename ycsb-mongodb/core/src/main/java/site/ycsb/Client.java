@@ -135,6 +135,13 @@ public final class Client {
   public static final String MAX_EXECUTION_TIME = "maxexecutiontime";
 
   /**
+   * Seconds of sustained zero throughput before the test is aborted.
+   * Default 60 seconds. Set to 0 to disable.
+   */
+  public static final String NOOPS_THRESHOLD_PROPERTY = "noopsthreshold";
+  public static final String NOOPS_THRESHOLD_DEFAULT = "240"; // 4 minutes
+
+  /**
    * Whether or not this is the transaction phase (run) or not (load).
    */
   public static final String DO_TRANSACTIONS_PROPERTY = "dotransactions";
@@ -298,7 +305,7 @@ public final class Client {
     warningthread.start();
 
     Measurements.setProperties(props);
-        
+
     Workload workload = getWorkload(props);
 
     final Tracer tracer = getTracer(props, workload);
@@ -319,8 +326,10 @@ public final class Client {
       int statusIntervalSeconds = Integer.parseInt(props.getProperty("status.interval", "10"));
       boolean trackJVMStats = props.getProperty(Measurements.MEASUREMENT_TRACK_JVM_PROPERTY,
           Measurements.MEASUREMENT_TRACK_JVM_PROPERTY_DEFAULT).equals("true");
+      int noopsThresholdSecs = Integer.parseInt(
+          props.getProperty(NOOPS_THRESHOLD_PROPERTY, NOOPS_THRESHOLD_DEFAULT));
       statusthread = new StatusThread(completeLatch, clients, label, standardstatus, statusIntervalSeconds,
-          trackJVMStats);
+          trackJVMStats, noopsThresholdSecs);
       statusthread.start();
     }
 
