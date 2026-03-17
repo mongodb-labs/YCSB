@@ -18,6 +18,7 @@
 package site.ycsb;
 
 import site.ycsb.measurements.Measurements;
+
 import java.text.DecimalFormat;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -47,6 +48,12 @@ public class StatusThread extends Thread {
   // The interval for reporting status.
   private long sleeptimeNs;
 
+  // No-ops early abort
+  // Number of consecutive no-ops status intervals before aborting. 0 means disabled.
+  private final int noopsIntervalCount;
+  private int consecutiveNoopsIntervals = 0;
+  private long prevTotalOps = -1;
+
   // JVM max/mins
   private int maxThreads;
   private int minThreads = Integer.MAX_VALUE;
@@ -69,7 +76,7 @@ public class StatusThread extends Thread {
    */
   public StatusThread(CountDownLatch completeLatch, List<ClientThread> clients,
                       String label, boolean standardstatus, int statusIntervalSeconds) {
-    this(completeLatch, clients, label, standardstatus, statusIntervalSeconds, false);
+    this(completeLatch, clients, label, standardstatus, statusIntervalSeconds, false, 0);
   }
 
   /**
@@ -82,10 +89,12 @@ public class StatusThread extends Thread {
    * @param standardstatus        If true the status is printed to stdout in addition to stderr.
    * @param statusIntervalSeconds The number of seconds between status updates.
    * @param trackJVMStats         Whether or not to track JVM stats.
+   * @param noopsThresholdSecs    Seconds of sustained zero throughput before aborting. 0 to disable.
+   *                              Converted to interval count using statusIntervalSeconds.
    */
   public StatusThread(CountDownLatch completeLatch, List<ClientThread> clients,
                       String label, boolean standardstatus, int statusIntervalSeconds,
-                      boolean trackJVMStats) {
+                      boolean trackJVMStats, int noopsThresholdSecs) {
     this.completeLatch = completeLatch;
     this.clients = clients;
     this.label = label;
@@ -93,6 +102,12 @@ public class StatusThread extends Thread {
     sleeptimeNs = TimeUnit.SECONDS.toNanos(statusIntervalSeconds);
     measurements = Measurements.getMeasurements();
     this.trackJVMStats = trackJVMStats;
+    // Compute how many intervals the threshold translates to. At least 1 if enabled.
+    if (noopsThresholdSecs > 0 && statusIntervalSeconds > 0) {
+      this.noopsIntervalCount = Math.max(1, noopsThresholdSecs / statusIntervalSeconds);
+    } else {
+      this.noopsIntervalCount = 0;
+    }
   }
 
   /**
@@ -153,13 +168,14 @@ public class StatusThread extends Thread {
       todoops += t.getOpsTodo();
     }
 
+    // PERF-7631 TEMPORARY TEST HACK — force zero ops to verify no-ops abort
+    totalops = 0;
 
     long interval = endIntervalMs - startTimeMs;
     double throughput = 1000.0 * (((double) totalops) / (double) interval);
     double curthroughput = 1000.0 * (((double) (totalops - lastTotalOps)) /
         ((double) (endIntervalMs - startIntervalMs)));
     long estremaining = (long) Math.ceil(todoops / throughput);
-
 
     DecimalFormat d = new DecimalFormat("#.##");
     String labelString = this.label + format.format(new Date());
@@ -181,6 +197,25 @@ public class StatusThread extends Thread {
     if (standardstatus) {
       System.out.println(msg);
     }
+
+    // No-ops early abort
+    if (noopsIntervalCount > 0) {
+      if (prevTotalOps >= 0 && totalops == prevTotalOps) {
+        consecutiveNoopsIntervals++;
+        if (consecutiveNoopsIntervals >= noopsIntervalCount) {
+          long elapsedNoopsSecs = TimeUnit.NANOSECONDS.toSeconds(
+              (long) consecutiveNoopsIntervals * sleeptimeNs);
+          System.err.println("ERROR: Aborting the test. No operations completed for " + consecutiveNoopsIntervals
+              + " consecutive intervals (" + elapsedNoopsSecs
+              + " seconds).");
+          System.exit(2);
+        }
+      } else {
+        consecutiveNoopsIntervals = 0;
+      }
+      prevTotalOps = totalops;
+    }
+
     return totalops;
   }
 
