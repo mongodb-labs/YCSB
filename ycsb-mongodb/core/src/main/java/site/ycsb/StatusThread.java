@@ -168,9 +168,6 @@ public class StatusThread extends Thread {
       todoops += t.getOpsTodo();
     }
 
-    // PERF-7631 TEMPORARY TEST HACK — force zero ops to verify no-ops abort
-    totalops = 0;
-
     long interval = endIntervalMs - startTimeMs;
     double throughput = 1000.0 * (((double) totalops) / (double) interval);
     double curthroughput = 1000.0 * (((double) (totalops - lastTotalOps)) /
