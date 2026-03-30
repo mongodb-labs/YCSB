@@ -91,7 +91,7 @@ public final class CommandLine {
       db = (DB) dbclass.newInstance();
     } catch (Exception e) {
       e.printStackTrace();
-      System.exit(0);
+      System.exit(-1);
     }
 
     db.setProperties(props);
@@ -99,7 +99,7 @@ public final class CommandLine {
       db.init();
     } catch (DBException e) {
       e.printStackTrace();
-      System.exit(0);
+      System.exit(-1);
     }
 
     System.out.println("Connected.");
@@ -172,7 +172,7 @@ public final class CommandLine {
         argindex++;
         if (argindex >= args.length) {
           usageMessage();
-          System.exit(0);
+          System.exit(64);
         }
         props.setProperty(Client.DB_PROPERTY, args[argindex]);
         argindex++;
@@ -180,7 +180,7 @@ public final class CommandLine {
         argindex++;
         if (argindex >= args.length) {
           usageMessage();
-          System.exit(0);
+          System.exit(64);
         }
         String propfile = args[argindex];
         argindex++;
@@ -190,7 +190,7 @@ public final class CommandLine {
           myfileprops.load(new FileInputStream(propfile));
         } catch (IOException e) {
           System.out.println(e.getMessage());
-          System.exit(0);
+          System.exit(64);
         }
 
         for (Enumeration e = myfileprops.propertyNames(); e.hasMoreElements();) {
@@ -203,12 +203,12 @@ public final class CommandLine {
         argindex++;
         if (argindex >= args.length) {
           usageMessage();
-          System.exit(0);
+          System.exit(64);
         }
         int eq = args[argindex].indexOf('=');
         if (eq < 0) {
           usageMessage();
-          System.exit(0);
+          System.exit(64);
         }
 
         String name = args[argindex].substring(0, eq);
@@ -219,7 +219,7 @@ public final class CommandLine {
         argindex++;
         if (argindex >= args.length) {
           usageMessage();
-          System.exit(0);
+          System.exit(64);
         }
         props.put(CoreWorkload.TABLENAME_PROPERTY, args[argindex]);
 
@@ -227,7 +227,7 @@ public final class CommandLine {
       } else {
         System.out.println("Unknown option " + args[argindex]);
         usageMessage();
-        System.exit(0);
+        System.exit(64);
       }
 
       if (argindex >= args.length) {
@@ -237,7 +237,7 @@ public final class CommandLine {
 
     if (argindex != args.length) {
       usageMessage();
-      System.exit(0);
+      System.exit(64);
     }
   }
 

@@ -144,7 +144,7 @@ public class ClientThread implements Runnable {
     } catch (Exception e) {
       e.printStackTrace();
       e.printStackTrace(System.out);
-      System.exit(0);
+      System.exit(-1);
     }
 
     try {
