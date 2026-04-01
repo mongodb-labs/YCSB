@@ -58,6 +58,7 @@
     <mongodb.version>4.7.0</mongodb.version>
     <snappy.version>1.1.8.4</snappy.version>
     <zstd.version>1.5.0-4</zstd.version>
+    <openjpa.jdbc.version>2.1.1</openjpa.jdbc.version>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <checkstyle.skip>true</checkstyle.skip>
     <skip.checkstyle>true</skip.checkstyle>
@@ -65,6 +66,7 @@
 
   <modules>
     <module>core</module>
+    <module>jdbc</module>
     <module>mongodb</module>
     <!--<module>distribution</module>-->
   </modules>
