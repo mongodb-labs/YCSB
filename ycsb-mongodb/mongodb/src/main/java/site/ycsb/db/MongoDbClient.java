@@ -14,10 +14,13 @@ package site.ycsb.db;
 import com.mongodb.AutoEncryptionSettings;
 import com.mongodb.ClientEncryptionSettings;
 import com.mongodb.ConnectionString;
+import com.mongodb.MongoBulkWriteException;
 import com.mongodb.MongoClientSettings;
+import com.mongodb.MongoServerException;
 import com.mongodb.ReadPreference;
 import com.mongodb.ServerAddress;
 import com.mongodb.WriteConcern;
+import com.mongodb.bulk.BulkWriteError;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoCollection;
@@ -48,6 +51,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -55,7 +59,9 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.UUID;
 import java.util.Vector;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import java.util.Arrays;
 
@@ -132,6 +138,28 @@ public class MongoDbClient extends DB {
     private static Encryption encryptionType = Encryption.UNENCRYPTED;
     private static ArrayList<Long> contentionFactors;
     private static HashMap<String, DiscreteGenerator> discreteFields;
+
+    /**
+     * MongoDB error codes in the SystemOverloadedError category. When the server
+     * rejects an operation with one of these codes it is shedding load; we count
+     * the rejection and return {@link Status#OK} so YCSB moves on to the next
+     * operation immediately, treating the rejection as a no-op rather than a
+     * real failure.
+     *
+     * Sourced from src/mongo/base/error_codes.yml (categories: [SystemOverloadedError]).
+     */
+    private static final Set<Integer> LOAD_SHED_ERROR_CODES = Collections.unmodifiableSet(
+        new HashSet<Integer>(Arrays.asList(
+            433, // AdmissionQueueOverflow
+            449, // RateLimitExceeded
+            450, // PooledConnectionAcquisitionRejected
+            451, // IngressRequestRateLimitExceeded
+            463, // InterruptedDueToOverload
+            489  // SearchRequestRejectedDueToOverload
+        )));
+
+    private static final ConcurrentHashMap<String, AtomicLong> loadShedCounts =
+        new ConcurrentHashMap<String, AtomicLong>();
 
     private static String generateSchema(String keyId, int numFields) {
         StringBuilder schema = new StringBuilder();
@@ -392,6 +420,35 @@ public class MongoDbClient extends DB {
     }
 
     /**
+     * Returns true when {@code e} carries a SystemOverloadedError code, i.e. the
+     * server rejected the operation due to load shedding.
+     */
+    private static boolean isLoadShedException(Throwable e) {
+        if (e instanceof MongoServerException) {
+            if (LOAD_SHED_ERROR_CODES.contains(((MongoServerException) e).getCode())) {
+                return true;
+            }
+        }
+        if (e instanceof MongoBulkWriteException) {
+            for (BulkWriteError err : ((MongoBulkWriteException) e).getWriteErrors()) {
+                if (LOAD_SHED_ERROR_CODES.contains(err.getCode())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Increment the per-op load-shed counter. Counters are emitted to stdout at
+     * cleanup time so they can be picked up by the DSI YCSB output parser and
+     * reported to Cedar.
+     */
+    private static void recordLoadShed(String op) {
+        loadShedCounts.computeIfAbsent(op, k -> new AtomicLong()).incrementAndGet();
+    }
+
+    /**
      * Initialize any state for this DB.
      * Called once per DB instance; there is one DB instance per client thread.
      */
@@ -584,15 +641,30 @@ public class MongoDbClient extends DB {
                     db[serverCounter++ % db.length].getCollection(bulkInsertTable);
                 collection.insertMany(insertList);
             } catch (Exception e) {
-                System.err.println("Exception while flushing remaining "
-                    + insertCount + " inserts during cleanup");
-                e.printStackTrace();
+                if (isLoadShedException(e)) {
+                    recordLoadShed("INSERT");
+                } else {
+                    System.err.println("Exception while flushing remaining "
+                        + insertCount + " inserts during cleanup");
+                    e.printStackTrace();
+                }
             } finally {
                 insertCount = 0;
                 insertList = null;
             }
         }
         if (initCount.decrementAndGet() <= 0) {
+            // Emit per-op load-shed counts so the DSI YCSB output parser can
+            // surface them as Cedar metrics. The aggregate line is the sum over
+            // all operations, included for at-a-glance log inspection.
+            long total = 0;
+            for (Map.Entry<String, AtomicLong> entry : loadShedCounts.entrySet()) {
+                long count = entry.getValue().get();
+                total += count;
+                System.out.println("[" + entry.getKey() + "-LOAD-SHED], Count, " + count);
+            }
+            System.out.println("[LOAD-SHED], TotalCount, " + total);
+
             for (MongoClient mongoClient : mongo) {
                 try {
                     mongoClient.close();
@@ -627,6 +699,10 @@ public class MongoDbClient extends DB {
             return Status.OK;
         }
         catch (Exception e) {
+            if (isLoadShedException(e)) {
+                recordLoadShed("DELETE");
+                return Status.OK;
+            }
             System.err.println(e.toString());
             e.printStackTrace();
             return Status.ERROR;
@@ -661,6 +737,10 @@ public class MongoDbClient extends DB {
              return Status.OK;
            }
            catch (Exception e) {
+             if (isLoadShedException(e)) {
+               recordLoadShed("INSERT");
+               return Status.OK;
+             }
              System.err.println("Couldn't insert key " + key);
              e.printStackTrace();
              return Status.ERROR;
@@ -681,6 +761,11 @@ public class MongoDbClient extends DB {
              return Status.OK;
            }
            catch (Exception e) {
+             if (isLoadShedException(e)) {
+               recordLoadShed("INSERT");
+               insertCount = 0;
+               return Status.OK;
+             }
              System.err.println("Exception while trying bulk insert with " + insertCount);
              e.printStackTrace();
              return Status.ERROR;
@@ -728,6 +813,10 @@ public class MongoDbClient extends DB {
             return Status.ERROR;
         }
         catch (Exception e) {
+            if (isLoadShedException(e)) {
+                recordLoadShed("READ");
+                return Status.OK;
+            }
             System.err.println(e.toString());
             return Status.ERROR;
         }
@@ -767,6 +856,10 @@ public class MongoDbClient extends DB {
             return Status.OK;
         }
         catch (Exception e) {
+            if (isLoadShedException(e)) {
+                recordLoadShed("UPDATE");
+                return Status.OK;
+            }
             System.err.println(e.toString());
             return Status.ERROR;
         }
@@ -818,6 +911,10 @@ public class MongoDbClient extends DB {
             return Status.OK;
         }
         catch (Exception e) {
+            if (isLoadShedException(e)) {
+                recordLoadShed("SCAN");
+                return Status.OK;
+            }
             System.err.println(e.toString());
             return Status.ERROR;
         }
