@@ -140,21 +140,25 @@ public class MongoDbClient extends DB {
     private static HashMap<String, DiscreteGenerator> discreteFields;
 
     /**
-     * MongoDB error codes in the SystemOverloadedError category. When the server
-     * rejects an operation with one of these codes it is shedding load; we count
-     * the rejection and return {@link Status#OK} so YCSB moves on to the next
-     * operation immediately, treating the rejection as a no-op rather than a
-     * real failure.
-     *
-     * Sourced from src/mongo/base/error_codes.yml (categories: [SystemOverloadedError]).
+     * Error label set by the server on every error in the SystemOverloadedError
+     * category. Detecting via label is the canonical, version-stable signal -
+     * the underlying error codes drift across releases.
+     */
+    private static final String LOAD_SHED_LABEL = "SystemOverloadedError";
+
+    /**
+     * Fallback error codes in the SystemOverloadedError category, used only for
+     * per-write entries inside a {@link MongoBulkWriteException} where the
+     * driver does not surface error labels. Sourced from
+     * src/mongo/base/error_codes.yml (categories: [SystemOverloadedError]).
      */
     private static final Set<Integer> LOAD_SHED_ERROR_CODES = Collections.unmodifiableSet(
         new HashSet<Integer>(Arrays.asList(
             433, // AdmissionQueueOverflow
             449, // RateLimitExceeded
             450, // PooledConnectionAcquisitionRejected
-            451, // IngressRequestRateLimitExceeded
-            463, // InterruptedDueToOverload
+            462, // IngressRequestRateLimitExceeded
+            473, // InterruptedDueToOverload
             489  // SearchRequestRejectedDueToOverload
         )));
 
@@ -420,12 +424,17 @@ public class MongoDbClient extends DB {
     }
 
     /**
-     * Returns true when {@code e} carries a SystemOverloadedError code, i.e. the
-     * server rejected the operation due to load shedding.
+     * Returns true when {@code e} represents a server-side load-shedding
+     * rejection. The primary signal is the {@code SystemOverloadedError} error
+     * label, which the server attaches to every overload-category error and is
+     * surfaced by the driver via {@link MongoServerException#hasErrorLabel}.
+     * For per-item write errors inside a {@link MongoBulkWriteException} the
+     * driver does not surface labels, so we fall back to a code list.
      */
     private static boolean isLoadShedException(Throwable e) {
         if (e instanceof MongoServerException) {
-            if (LOAD_SHED_ERROR_CODES.contains(((MongoServerException) e).getCode())) {
+            MongoServerException mse = (MongoServerException) e;
+            if (mse.hasErrorLabel(LOAD_SHED_LABEL)) {
                 return true;
             }
         }
