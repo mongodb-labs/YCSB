@@ -27,6 +27,7 @@ import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoCursor;
 import com.mongodb.client.MongoDatabase;
 import com.mongodb.client.model.CreateCollectionOptions;
+import com.mongodb.client.model.InsertManyOptions;
 import com.mongodb.client.model.vault.DataKeyOptions;
 import com.mongodb.client.result.UpdateResult;
 import com.mongodb.client.vault.ClientEncryption;
@@ -60,6 +61,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.Vector;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -164,6 +166,33 @@ public class MongoDbClient extends DB {
 
     private static final ConcurrentHashMap<String, AtomicLong> loadShedCounts =
         new ConcurrentHashMap<String, AtomicLong>();
+
+    /**
+     * Per-op count of retry attempts incurred while waiting out load shedding
+     * during the load phase. Test-phase load-shed responses are absorbed
+     * without retry, so this counter is only incremented during load.
+     */
+    private static final ConcurrentHashMap<String, AtomicLong> loadShedRetries =
+        new ConcurrentHashMap<String, AtomicLong>();
+
+    /**
+     * True only during the YCSB load phase (selected via {@code -load} which
+     * sets the {@code dotransactions} property to {@code false}). The load
+     * phase cannot tolerate dropped records, so load-shed responses trigger a
+     * retry-with-backoff loop until the write succeeds or fails for a
+     * non-load-shed reason. The test phase keeps the absorb-and-continue
+     * behaviour, since dropping a single transaction does not corrupt the
+     * dataset.
+     */
+    private static volatile boolean inLoadPhase = false;
+
+    /** MongoDB duplicate-key error code, returned on retry of an already-committed insert. */
+    private static final int DUPLICATE_KEY_ERROR_CODE = 11000;
+
+    /** Initial backoff for load-phase retries (milliseconds). */
+    private static final long LOAD_SHED_BACKOFF_BASE_MS = 100;
+    /** Maximum backoff between load-phase retries (milliseconds). */
+    private static final long LOAD_SHED_BACKOFF_MAX_MS = 5000;
 
     private static String generateSchema(String keyId, int numFields) {
         StringBuilder schema = new StringBuilder();
@@ -458,6 +487,129 @@ public class MongoDbClient extends DB {
     }
 
     /**
+     * Increment the per-op load-shed retry counter. Only called during the
+     * load phase, so {@code <op>_load_shed_retries} captures retry pressure
+     * incurred to land the dataset, distinct from the
+     * {@code <op>_load_shed_count} event count.
+     */
+    private static void recordLoadShedRetry(String op) {
+        loadShedRetries.computeIfAbsent(op, k -> new AtomicLong()).incrementAndGet();
+    }
+
+    /**
+     * Full-jitter exponential backoff capped at {@link #LOAD_SHED_BACKOFF_MAX_MS}.
+     * Used only during the load phase.
+     */
+    private static long computeBackoffDelayMs(int attempt) {
+        int safeAttempt = Math.min(Math.max(attempt, 1), 30);
+        long uncapped = LOAD_SHED_BACKOFF_BASE_MS * (1L << (safeAttempt - 1));
+        long capped = Math.min(LOAD_SHED_BACKOFF_MAX_MS, uncapped);
+        return ThreadLocalRandom.current().nextLong(capped + 1);
+    }
+
+    private static void sleepBeforeRetry(int attempt) {
+        long delay = computeBackoffDelayMs(attempt);
+        try {
+            Thread.sleep(delay);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static boolean isDuplicateKeyException(Throwable e) {
+        if (e instanceof com.mongodb.MongoWriteException) {
+            return ((com.mongodb.MongoWriteException) e).getError().getCode()
+                == DUPLICATE_KEY_ERROR_CODE;
+        }
+        return false;
+    }
+
+    /**
+     * Insert a single record, retrying with backoff while every subsequent
+     * failure is in the {@code SystemOverloadedError} category. The load
+     * phase cannot tolerate dropped records, so we only return once the
+     * insert has either succeeded or failed for a non-load-shed reason.
+     *
+     * <p>Idempotency: YCSB load uses deterministic unique {@code _id}s, so
+     * retrying after a server-side rejection is safe. If the original attempt
+     * actually committed before the rejection was reported, the retry surfaces
+     * a {@link com.mongodb.MongoWriteException} with a duplicate-key code,
+     * which we treat as success.
+     */
+    private void insertOneWithLoadShedRetry(MongoCollection<Document> collection, Document doc)
+        throws Exception {
+        int attempt = 0;
+        while (true) {
+            try {
+                collection.insertOne(doc);
+                return;
+            } catch (Exception e) {
+                if (attempt > 0 && isDuplicateKeyException(e)) {
+                    return;
+                }
+                if (!isLoadShedException(e)) {
+                    throw e;
+                }
+                recordLoadShed("INSERT");
+                attempt++;
+                recordLoadShedRetry("INSERT");
+                sleepBeforeRetry(attempt);
+            }
+        }
+    }
+
+    /**
+     * Insert a batch, retrying with backoff for any per-document load-shed
+     * rejections. Uses unordered inserts so a partial batch is not abandoned
+     * on the first rejected entry: successful inserts commit, rejected
+     * entries are retried by index, and duplicate-key errors that occur on
+     * retry (because a prior attempt actually committed) are treated as
+     * success.
+     */
+    private void insertManyWithLoadShedRetry(MongoCollection<Document> collection, List<Document> docs)
+        throws Exception {
+        InsertManyOptions options = new InsertManyOptions().ordered(false);
+        List<Document> remaining = docs;
+        int attempt = 0;
+        while (!remaining.isEmpty()) {
+            try {
+                collection.insertMany(remaining, options);
+                return;
+            } catch (MongoBulkWriteException e) {
+                List<Document> retry = new ArrayList<Document>();
+                for (BulkWriteError err : e.getWriteErrors()) {
+                    if (err.getCode() == DUPLICATE_KEY_ERROR_CODE) {
+                        // Already inserted on a prior retry — treat as success.
+                        continue;
+                    }
+                    if (LOAD_SHED_ERROR_CODES.contains(err.getCode())) {
+                        retry.add(remaining.get(err.getIndex()));
+                        continue;
+                    }
+                    // Unexpected per-write error — propagate.
+                    throw e;
+                }
+                recordLoadShed("INSERT");
+                if (retry.isEmpty()) {
+                    return;
+                }
+                remaining = retry;
+                attempt++;
+                recordLoadShedRetry("INSERT");
+                sleepBeforeRetry(attempt);
+            } catch (MongoServerException e) {
+                if (!e.hasErrorLabel(LOAD_SHED_LABEL)) {
+                    throw e;
+                }
+                recordLoadShed("INSERT");
+                attempt++;
+                recordLoadShedRetry("INSERT");
+                sleepBeforeRetry(attempt);
+            }
+        }
+    }
+
+    /**
      * Initialize any state for this DB.
      * Called once per DB instance; there is one DB instance per client thread.
      */
@@ -472,6 +624,10 @@ public class MongoDbClient extends DB {
             // initialize MongoDb driver
             Properties props = getProperties();
             String urls = props.getProperty("mongodb.url", "mongodb://localhost:27017");
+
+            // YCSB sets dotransactions=false when invoked with -load (the load
+            // phase). Default ("true") covers -t and the YCSB run path.
+            inLoadPhase = "false".equalsIgnoreCase(props.getProperty("dotransactions", "true"));
 
             /* Credentials */
             database = props.getProperty("mongodb.database", "ycsb");
@@ -648,9 +804,13 @@ public class MongoDbClient extends DB {
             try {
                 MongoCollection<Document> collection =
                     db[serverCounter++ % db.length].getCollection(bulkInsertTable);
-                collection.insertMany(insertList);
+                if (inLoadPhase) {
+                    insertManyWithLoadShedRetry(collection, insertList);
+                } else {
+                    collection.insertMany(insertList);
+                }
             } catch (Exception e) {
-                if (isLoadShedException(e)) {
+                if (!inLoadPhase && isLoadShedException(e)) {
                     recordLoadShed("INSERT");
                 } else {
                     System.err.println("Exception while flushing remaining "
@@ -664,7 +824,7 @@ public class MongoDbClient extends DB {
         }
         if (initCount.decrementAndGet() <= 0) {
             // Emit per-op load-shed counts so the DSI YCSB output parser can
-            // surface them as Cedar metrics. The aggregate line is the sum over
+            // surface them as Cedar metrics. The aggregate lines are sums over
             // all operations, included for at-a-glance log inspection.
             long total = 0;
             for (Map.Entry<String, AtomicLong> entry : loadShedCounts.entrySet()) {
@@ -673,6 +833,14 @@ public class MongoDbClient extends DB {
                 System.out.println("[" + entry.getKey() + "-LOAD-SHED], Count, " + count);
             }
             System.out.println("[LOAD-SHED], TotalCount, " + total);
+
+            long totalRetries = 0;
+            for (Map.Entry<String, AtomicLong> entry : loadShedRetries.entrySet()) {
+                long count = entry.getValue().get();
+                totalRetries += count;
+                System.out.println("[" + entry.getKey() + "-LOAD-SHED-RETRIES], Count, " + count);
+            }
+            System.out.println("[LOAD-SHED-RETRIES], TotalCount, " + totalRetries);
 
             for (MongoClient mongoClient : mongo) {
                 try {
@@ -742,11 +910,15 @@ public class MongoDbClient extends DB {
         }
         if (BATCHSIZE == 1 ) {
            try {
-             collection.insertOne(r);
+             if (inLoadPhase) {
+               insertOneWithLoadShedRetry(collection, r);
+             } else {
+               collection.insertOne(r);
+             }
              return Status.OK;
            }
            catch (Exception e) {
-             if (isLoadShedException(e)) {
+             if (!inLoadPhase && isLoadShedException(e)) {
                recordLoadShed("INSERT");
                return Status.OK;
              }
@@ -765,12 +937,16 @@ public class MongoDbClient extends DB {
             return Status.OK;
         } else {
            try {
-             collection.insertMany(insertList);
+             if (inLoadPhase) {
+               insertManyWithLoadShedRetry(collection, insertList);
+             } else {
+               collection.insertMany(insertList);
+             }
              insertCount = 0;
              return Status.OK;
            }
            catch (Exception e) {
-             if (isLoadShedException(e)) {
+             if (!inLoadPhase && isLoadShedException(e)) {
                recordLoadShed("INSERT");
                insertCount = 0;
                return Status.OK;
