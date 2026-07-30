@@ -1,0 +1,121 @@
+package site.ycsb.db;
+
+import com.mongodb.MongoBulkWriteException;
+import com.mongodb.MongoServerException;
+import com.mongodb.bulk.BulkWriteError;
+import site.ycsb.Status;
+
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
+import java.util.HashSet;
+import java.util.Arrays;
+
+/**
+ * Pure decision logic for MongoDB load-shedding responses: whether an exception is
+ * a shed rejection, which {@link Status} represents it, how long to back off, and
+ * whether the whole load has stalled.
+ *
+ * <p>Deliberately free of driver calls and I/O so it can be unit-tested without a
+ * live server. {@link MongoDbClient} owns all actual database interaction.
+ */
+final class LoadShedPolicy {
+
+  /**
+   * Error label the server attaches to every error in the SystemOverloadedError
+   * category. Preferred over code matching: labels are stable across releases,
+   * codes drift.
+   */
+  static final String SHED_LABEL = "SystemOverloadedError";
+
+  /** MongoDB duplicate-key error code. */
+  static final int DUPLICATE_KEY_ERROR_CODE = 11000;
+
+  /**
+   * The complete SystemOverloadedError category, verified exhaustive against
+   * src/mongo/base/error_codes.yml. Used as a fallback for per-item bulk write
+   * errors, which the driver does not surface labels for.
+   */
+  private static final Map<Integer, Status> SHED_STATUS_BY_CODE;
+  static {
+    Map<Integer, Status> m = new HashMap<Integer, Status>();
+    m.put(433, new Status("SHED_ADMISSION_QUEUE_OVERFLOW",
+        "Rejected: admission queue overflow."));
+    m.put(449, new Status("SHED_RATE_LIMIT_EXCEEDED",
+        "Rejected: rate limit exceeded."));
+    m.put(450, new Status("SHED_POOLED_CONNECTION_ACQUISITION_REJECTED",
+        "Rejected: pooled connection acquisition rejected."));
+    m.put(462, new Status("SHED_INGRESS_REQUEST_RATE_LIMIT_EXCEEDED",
+        "Rejected: ingress request rate limit exceeded."));
+    m.put(473, new Status("SHED_INTERRUPTED_DUE_TO_OVERLOAD",
+        "Terminated: interrupted due to overload."));
+    m.put(489, new Status("SHED_SEARCH_REQUEST_REJECTED_DUE_TO_OVERLOAD",
+        "Rejected: search request rejected due to overload."));
+    SHED_STATUS_BY_CODE = Collections.unmodifiableMap(m);
+  }
+
+  /** Fallback for a labelled error whose code is not in the table above. */
+  static final Status SHED_OTHER =
+      new Status("SHED_OTHER", "Rejected: server overloaded (unrecognised code).");
+
+  static final Set<Integer> SHED_ERROR_CODES =
+      Collections.unmodifiableSet(new HashSet<Integer>(SHED_STATUS_BY_CODE.keySet()));
+
+  private LoadShedPolicy() {
+  }
+
+  /**
+   * True when {@code t} is a server-side load-shedding rejection. Checks the
+   * error label first, then falls back to the code table (needed for per-item
+   * bulk write errors, which carry no labels).
+   */
+  static boolean isShed(Throwable t) {
+    if (t == null) {
+      return false;
+    }
+    if (t instanceof MongoServerException) {
+      MongoServerException mse = (MongoServerException) t;
+      if (mse.hasErrorLabel(SHED_LABEL)) {
+        return true;
+      }
+      if (SHED_ERROR_CODES.contains(mse.getCode())) {
+        return true;
+      }
+    }
+    if (t instanceof MongoBulkWriteException) {
+      for (BulkWriteError err : ((MongoBulkWriteException) t).getWriteErrors()) {
+        if (SHED_ERROR_CODES.contains(err.getCode())) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** The {@link Status} representing a shed rejection with this error code. */
+  static Status statusForCode(int code) {
+    Status s = SHED_STATUS_BY_CODE.get(code);
+    return s != null ? s : SHED_OTHER;
+  }
+
+  /**
+   * The {@link Status} representing {@code t}, or {@code null} when {@code t} is
+   * not a shed rejection.
+   */
+  static Status statusFor(Throwable t) {
+    if (!isShed(t)) {
+      return null;
+    }
+    if (t instanceof MongoServerException) {
+      return statusForCode(((MongoServerException) t).getCode());
+    }
+    return SHED_OTHER;
+  }
+
+  /** True when {@code t} is a duplicate-key error. */
+  static boolean isDuplicateKey(Throwable t) {
+    return t instanceof MongoServerException
+        && ((MongoServerException) t).getCode() == DUPLICATE_KEY_ERROR_CODE;
+  }
+}
