@@ -140,11 +140,11 @@ public class MongoDbClient extends DB {
     private static HashMap<String, DiscreteGenerator> discreteFields;
 
     /**
-     * Per-op count of retry attempts incurred while waiting out load shedding
-     * during the load phase. Test-phase load-shed responses are absorbed
+     * Per-op count of retry attempts incurred while waiting out overload
+     * during the load phase. Test-phase overload responses are absorbed
      * without retry, so this counter is only incremented during load.
      */
-    private static final ConcurrentHashMap<String, AtomicLong> loadShedRetries =
+    private static final ConcurrentHashMap<String, AtomicLong> overloadRetries =
         new ConcurrentHashMap<String, AtomicLong>();
 
     /**
@@ -154,11 +154,11 @@ public class MongoDbClient extends DB {
     private static volatile boolean inLoadPhase = false;
 
     /**
-     * Whether the load phase retries shed rejections. Resolved once in init() by
-     * LoadShedPolicy.retryModeForLoad; on by default. Only meaningful when
+     * Whether the load phase retries overload rejections. Resolved once in init() by
+     * OverloadPolicy.retryModeForLoad; on by default. Only meaningful when
      * inLoadPhase is true.
      */
-    private static volatile boolean loadShedRetryEnabled = true;
+    private static volatile boolean overloadRetryEnabled = true;
 
     /** Ensures the resolved retry mode is printed once per JVM, not once per thread. */
     private static boolean retryModeLogged = false;
@@ -422,13 +422,13 @@ public class MongoDbClient extends DB {
     }
 
     /**
-     * Increment the per-op load-shed retry counter. Only called during the
-     * load phase, so {@code <op>_load_shed_retries} captures retry pressure
+     * Increment the per-op overload retry counter. Only called during the
+     * load phase, so {@code <op>_overload_retries} captures retry pressure
      * incurred to land the dataset, distinct from the
-     * {@code <op>_load_shed_count} event count.
+     * {@code <op>_overload_count} event count.
      */
-    private static void recordLoadShedRetry(String op) {
-        loadShedRetries.computeIfAbsent(op, k -> new AtomicLong()).incrementAndGet();
+    private static void recordOverloadRetry(String op) {
+        overloadRetries.computeIfAbsent(op, k -> new AtomicLong()).incrementAndGet();
     }
 
     /**
@@ -445,19 +445,19 @@ public class MongoDbClient extends DB {
      */
     private static void awaitRetry(String op, int attempt) {
         if (attempt == 10 || attempt == 50 || (attempt >= 100 && attempt % 100 == 0)) {
-            System.err.println("[LOAD-SHED-RETRY] " + op + " still retrying after "
-                + attempt + " shed rejections on this operation; the server is "
+            System.err.println("[OVERLOAD-RETRY] " + op + " still retrying after "
+                + attempt + " overload rejections on this operation; the server is "
                 + "rejecting writes and the load is waiting it out.");
         }
         try {
-            Thread.sleep(LoadShedPolicy.backoffDelayMs(attempt));
+            Thread.sleep(OverloadPolicy.backoffDelayMs(attempt));
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
         }
     }
 
     /**
-     * Insert one record, retrying while every failure is a shed rejection.
+     * Insert one record, retrying while every failure is an overload rejection.
      *
      * <p>Idempotent because YCSB load keys are deterministic and unique: a
      * duplicate-key error on a retry means the original attempt actually
@@ -466,7 +466,7 @@ public class MongoDbClient extends DB {
      * attempt means the collection was not empty, which is a setup problem and
      * must surface (stock YCSB fails here too).
      */
-    private void insertOneWithLoadShedRetry(MongoCollection<Document> collection, Document doc)
+    private void insertOneWithOverloadRetry(MongoCollection<Document> collection, Document doc)
         throws Exception {
         int attempt = 0;
         while (true) {
@@ -474,14 +474,14 @@ public class MongoDbClient extends DB {
                 collection.insertOne(doc);
                 return;
             } catch (Exception e) {
-                if (attempt > 0 && LoadShedPolicy.isDuplicateKey(e)) {
+                if (attempt > 0 && OverloadPolicy.isDuplicateKey(e)) {
                     return;
                 }
-                if (!LoadShedPolicy.isShed(e)) {
+                if (!OverloadPolicy.isOverload(e)) {
                     throw e;
                 }
                 attempt++;
-                recordLoadShedRetry("INSERT");
+                recordOverloadRetry("INSERT");
                 awaitRetry("INSERT", attempt);
             }
         }
@@ -491,11 +491,11 @@ public class MongoDbClient extends DB {
      * Insert a batch, retrying only the rejected entries.
      *
      * <p>Unordered so a rejection partway through does not abandon the rest of
-     * the batch: successful entries commit, and only the shed indices are
+     * the batch: successful entries commit, and only the overload indices are
      * retried. Duplicate-key errors are forgiven from attempt 1 onward, for the
-     * same reason as {@link #insertOneWithLoadShedRetry}.
+     * same reason as {@link #insertOneWithOverloadRetry}.
      */
-    private void insertManyWithLoadShedRetry(MongoCollection<Document> collection,
+    private void insertManyWithOverloadRetry(MongoCollection<Document> collection,
                                              List<Document> docs) throws Exception {
         InsertManyOptions options = new InsertManyOptions().ordered(false);
         List<Document> remaining = docs;
@@ -506,21 +506,21 @@ public class MongoDbClient extends DB {
                 return;
             } catch (MongoBulkWriteException e) {
                 List<Document> retry = new ArrayList<Document>();
-                boolean sawShed = false;
+                boolean sawOverload = false;
                 for (BulkWriteError err : e.getWriteErrors()) {
-                    if (err.getCode() == LoadShedPolicy.DUPLICATE_KEY_ERROR_CODE) {
+                    if (err.getCode() == OverloadPolicy.DUPLICATE_KEY_ERROR_CODE) {
                         if (attempt == 0) {
                             // Collection was not empty at load start — a setup
-                            // problem, not shedding. Surface it.
+                            // problem, not overloading. Surface it.
                             throw e;
                         }
                         continue; // committed on an earlier attempt
                     }
-                    if (LoadShedPolicy.SHED_ERROR_CODES.contains(err.getCode())
-                        || e.hasErrorLabel(LoadShedPolicy.SHED_LABEL)) {
-                        // The label fallback keeps a future shed code from
+                    if (OverloadPolicy.OVERLOAD_ERROR_CODES.contains(err.getCode())
+                        || e.hasErrorLabel(OverloadPolicy.OVERLOAD_LABEL)) {
+                        // The label fallback keeps a future overload code from
                         // hard-failing the load.
-                        sawShed = true;
+                        sawOverload = true;
                         retry.add(remaining.get(err.getIndex()));
                         continue;
                     }
@@ -529,18 +529,18 @@ public class MongoDbClient extends DB {
                 if (retry.isEmpty()) {
                     return;
                 }
-                if (sawShed) {
+                if (sawOverload) {
                     attempt++;
-                    recordLoadShedRetry("INSERT");
+                    recordOverloadRetry("INSERT");
                     awaitRetry("INSERT", attempt);
                 }
                 remaining = retry;
             } catch (MongoServerException e) {
-                if (!LoadShedPolicy.isShed(e)) {
+                if (!OverloadPolicy.isOverload(e)) {
                     throw e;
                 }
                 attempt++;
-                recordLoadShedRetry("INSERT");
+                recordOverloadRetry("INSERT");
                 awaitRetry("INSERT", attempt);
             }
         }
@@ -566,15 +566,15 @@ public class MongoDbClient extends DB {
             // ("true") covers the run/transaction path.
             inLoadPhase = "false".equalsIgnoreCase(props.getProperty("dotransactions", "true"));
             if (inLoadPhase) {
-                LoadShedPolicy.RetryMode retryMode = LoadShedPolicy.retryModeForLoad(
-                    props.getProperty(LoadShedPolicy.RETRY_ENABLED_PROPERTY),
+                OverloadPolicy.RetryMode retryMode = OverloadPolicy.retryModeForLoad(
+                    props.getProperty(OverloadPolicy.RETRY_ENABLED_PROPERTY),
                     props.getProperty("maxexecutiontime"));
-                loadShedRetryEnabled = retryMode.isEnabled();
+                overloadRetryEnabled = retryMode.isEnabled();
                 synchronized (MongoDbClient.class) {
                     if (!retryModeLogged) {
                         retryModeLogged = true;
-                        System.out.println("[LOAD-SHED-RETRY], Mode, " + retryMode.name());
-                        System.out.println("[LOAD-SHED-RETRY], Reason, " + retryMode.reason());
+                        System.out.println("[OVERLOAD-RETRY], Mode, " + retryMode.name());
+                        System.out.println("[OVERLOAD-RETRY], Reason, " + retryMode.reason());
                     }
                 }
             }
@@ -754,8 +754,8 @@ public class MongoDbClient extends DB {
             try {
                 MongoCollection<Document> collection =
                     db[serverCounter++ % db.length].getCollection(bulkInsertTable);
-                if (inLoadPhase && loadShedRetryEnabled) {
-                    insertManyWithLoadShedRetry(collection, insertList);
+                if (inLoadPhase && overloadRetryEnabled) {
+                    insertManyWithOverloadRetry(collection, insertList);
                 } else {
                     collection.insertMany(insertList);
                 }
@@ -770,12 +770,12 @@ public class MongoDbClient extends DB {
         }
         if (initCount.decrementAndGet() <= 0) {
             long totalRetries = 0;
-            for (Map.Entry<String, AtomicLong> entry : loadShedRetries.entrySet()) {
+            for (Map.Entry<String, AtomicLong> entry : overloadRetries.entrySet()) {
                 long count = entry.getValue().get();
                 totalRetries += count;
-                System.out.println("[" + entry.getKey() + "-LOAD-SHED-RETRIES], Count, " + count);
+                System.out.println("[" + entry.getKey() + "-OVERLOAD-RETRIES], Count, " + count);
             }
-            System.out.println("[LOAD-SHED-RETRIES], TotalCount, " + totalRetries);
+            System.out.println("[OVERLOAD-RETRIES], TotalCount, " + totalRetries);
 
             for (MongoClient mongoClient : mongo) {
                 try {
@@ -811,9 +811,9 @@ public class MongoDbClient extends DB {
             return Status.OK;
         }
         catch (Exception e) {
-            Status shed = LoadShedPolicy.statusFor(e);
-            if (shed != null) {
-                return shed;
+            Status overload = OverloadPolicy.statusFor(e);
+            if (overload != null) {
+                return overload;
             }
             System.err.println(e.toString());
             e.printStackTrace();
@@ -845,8 +845,8 @@ public class MongoDbClient extends DB {
         }
         if (BATCHSIZE == 1 ) {
            try {
-             if (inLoadPhase && loadShedRetryEnabled) {
-               insertOneWithLoadShedRetry(collection, r);
+             if (inLoadPhase && overloadRetryEnabled) {
+               insertOneWithOverloadRetry(collection, r);
              } else {
                collection.insertOne(r);
              }
@@ -854,9 +854,9 @@ public class MongoDbClient extends DB {
            }
            catch (Exception e) {
              if (!inLoadPhase) {
-               Status shed = LoadShedPolicy.statusFor(e);
-               if (shed != null) {
-                 return shed;
+               Status overload = OverloadPolicy.statusFor(e);
+               if (overload != null) {
+                 return overload;
                }
              }
              System.err.println("Couldn't insert key " + key);
@@ -874,8 +874,8 @@ public class MongoDbClient extends DB {
             return Status.OK;
         } else {
            try {
-             if (inLoadPhase && loadShedRetryEnabled) {
-               insertManyWithLoadShedRetry(collection, insertList);
+             if (inLoadPhase && overloadRetryEnabled) {
+               insertManyWithOverloadRetry(collection, insertList);
              } else {
                collection.insertMany(insertList);
              }
@@ -884,10 +884,10 @@ public class MongoDbClient extends DB {
            }
             catch (Exception e) {
               if (!inLoadPhase) {
-                Status shed = LoadShedPolicy.statusFor(e);
-                if (shed != null) {
+                Status overload = OverloadPolicy.statusFor(e);
+                if (overload != null) {
                   insertCount = 0;
-                  return shed;
+                  return overload;
                 }
               }
               System.err.println("Exception while trying bulk insert with " + insertCount);
@@ -938,9 +938,9 @@ public class MongoDbClient extends DB {
             return Status.ERROR;
         }
         catch (Exception e) {
-            Status shed = LoadShedPolicy.statusFor(e);
-            if (shed != null) {
-                return shed;
+            Status overload = OverloadPolicy.statusFor(e);
+            if (overload != null) {
+                return overload;
             }
             System.err.println(e.toString());
             return Status.ERROR;
@@ -981,9 +981,9 @@ public class MongoDbClient extends DB {
             return Status.OK;
         }
         catch (Exception e) {
-            Status shed = LoadShedPolicy.statusFor(e);
-            if (shed != null) {
-                return shed;
+            Status overload = OverloadPolicy.statusFor(e);
+            if (overload != null) {
+                return overload;
             }
             System.err.println(e.toString());
             return Status.ERROR;
@@ -1036,9 +1036,9 @@ public class MongoDbClient extends DB {
             return Status.OK;
         }
         catch (Exception e) {
-            Status shed = LoadShedPolicy.statusFor(e);
-            if (shed != null) {
-                return shed;
+            Status overload = OverloadPolicy.statusFor(e);
+            if (overload != null) {
+                return overload;
             }
             System.err.println(e.toString());
             return Status.ERROR;

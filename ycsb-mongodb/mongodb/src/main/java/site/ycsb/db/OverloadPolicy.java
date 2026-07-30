@@ -13,20 +13,20 @@ import java.util.HashSet;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * Pure decision logic for MongoDB load-shedding responses: whether an exception is
- * a shed rejection, which {@link Status} represents it, and how long to back off.
+ * Pure decision logic for MongoDB overload responses: whether an exception is
+ * an overload rejection, which {@link Status} represents it, and how long to back off.
  *
  * <p>Deliberately free of driver calls and I/O so it can be unit-tested without a
  * live server. {@link MongoDbClient} owns all actual database interaction.
  */
-final class LoadShedPolicy {
+final class OverloadPolicy {
 
   /**
    * Error label the server attaches to every error in the SystemOverloadedError
    * category. Preferred over code matching: labels are stable across releases,
    * codes drift.
    */
-  static final String SHED_LABEL = "SystemOverloadedError";
+  static final String OVERLOAD_LABEL = "SystemOverloadedError";
 
   /** MongoDB duplicate-key error code. */
   static final int DUPLICATE_KEY_ERROR_CODE = 11000;
@@ -36,55 +36,55 @@ final class LoadShedPolicy {
    * src/mongo/base/error_codes.yml. Used as a fallback for per-item bulk write
    * errors, which the driver does not surface labels for.
    */
-  private static final Map<Integer, Status> SHED_STATUS_BY_CODE;
+  private static final Map<Integer, Status> OVERLOAD_STATUS_BY_CODE;
   static {
     Map<Integer, Status> m = new HashMap<Integer, Status>();
-    m.put(433, new Status("SHED_ADMISSION_QUEUE_OVERFLOW",
+    m.put(433, new Status("OVERLOAD_ADMISSION_QUEUE_OVERFLOW",
         "Rejected: admission queue overflow."));
-    m.put(449, new Status("SHED_RATE_LIMIT_EXCEEDED",
+    m.put(449, new Status("OVERLOAD_RATE_LIMIT_EXCEEDED",
         "Rejected: rate limit exceeded."));
-    m.put(450, new Status("SHED_POOLED_CONNECTION_ACQUISITION_REJECTED",
+    m.put(450, new Status("OVERLOAD_POOLED_CONNECTION_ACQUISITION_REJECTED",
         "Rejected: pooled connection acquisition rejected."));
-    m.put(462, new Status("SHED_INGRESS_REQUEST_RATE_LIMIT_EXCEEDED",
+    m.put(462, new Status("OVERLOAD_INGRESS_REQUEST_RATE_LIMIT_EXCEEDED",
         "Rejected: ingress request rate limit exceeded."));
-    m.put(473, new Status("SHED_INTERRUPTED_DUE_TO_OVERLOAD",
+    m.put(473, new Status("OVERLOAD_INTERRUPTED_DUE_TO_OVERLOAD",
         "Terminated: interrupted due to overload."));
-    m.put(489, new Status("SHED_SEARCH_REQUEST_REJECTED_DUE_TO_OVERLOAD",
+    m.put(489, new Status("OVERLOAD_SEARCH_REQUEST_REJECTED_DUE_TO_OVERLOAD",
         "Rejected: search request rejected due to overload."));
-    SHED_STATUS_BY_CODE = Collections.unmodifiableMap(m);
+    OVERLOAD_STATUS_BY_CODE = Collections.unmodifiableMap(m);
   }
 
   /** Fallback for a labelled error whose code is not in the table above. */
-  static final Status SHED_OTHER =
-      new Status("SHED_OTHER", "Rejected: server overloaded (unrecognised code).");
+  static final Status OVERLOAD_OTHER =
+      new Status("OVERLOAD_OTHER", "Rejected: server overloaded (unrecognised code).");
 
-  static final Set<Integer> SHED_ERROR_CODES =
-      Collections.unmodifiableSet(new HashSet<Integer>(SHED_STATUS_BY_CODE.keySet()));
+  static final Set<Integer> OVERLOAD_ERROR_CODES =
+      Collections.unmodifiableSet(new HashSet<Integer>(OVERLOAD_STATUS_BY_CODE.keySet()));
 
-  private LoadShedPolicy() {
+  private OverloadPolicy() {
   }
 
   /**
-   * True when {@code t} is a server-side load-shedding rejection. Checks the
+   * True when {@code t} is a server-side overload rejection. Checks the
    * error label first, then falls back to the code table (needed for per-item
    * bulk write errors, which carry no labels).
    */
-  static boolean isShed(Throwable t) {
+  static boolean isOverload(Throwable t) {
     if (t == null) {
       return false;
     }
     if (t instanceof MongoServerException) {
       MongoServerException mse = (MongoServerException) t;
-      if (mse.hasErrorLabel(SHED_LABEL)) {
+      if (mse.hasErrorLabel(OVERLOAD_LABEL)) {
         return true;
       }
-      if (SHED_ERROR_CODES.contains(mse.getCode())) {
+      if (OVERLOAD_ERROR_CODES.contains(mse.getCode())) {
         return true;
       }
     }
     if (t instanceof MongoBulkWriteException) {
       for (BulkWriteError err : ((MongoBulkWriteException) t).getWriteErrors()) {
-        if (SHED_ERROR_CODES.contains(err.getCode())) {
+        if (OVERLOAD_ERROR_CODES.contains(err.getCode())) {
           return true;
         }
       }
@@ -92,24 +92,24 @@ final class LoadShedPolicy {
     return false;
   }
 
-  /** The {@link Status} representing a shed rejection with this error code. */
+  /** The {@link Status} representing an overload rejection with this error code. */
   static Status statusForCode(int code) {
-    Status s = SHED_STATUS_BY_CODE.get(code);
-    return s != null ? s : SHED_OTHER;
+    Status s = OVERLOAD_STATUS_BY_CODE.get(code);
+    return s != null ? s : OVERLOAD_OTHER;
   }
 
   /**
    * The {@link Status} representing {@code t}, or {@code null} when {@code t} is
-   * not a shed rejection.
+   * not an overload rejection.
    */
   static Status statusFor(Throwable t) {
-    if (!isShed(t)) {
+    if (!isOverload(t)) {
       return null;
     }
     if (t instanceof MongoServerException) {
       return statusForCode(((MongoServerException) t).getCode());
     }
-    return SHED_OTHER;
+    return OVERLOAD_OTHER;
   }
 
   /** True when {@code t} is a duplicate-key error. */
@@ -142,10 +142,10 @@ final class LoadShedPolicy {
   }
 
   /** Property that forces load-phase retry on or off, overriding the default. */
-  static final String RETRY_ENABLED_PROPERTY = "mongodb.loadshed.retry.enabled";
+  static final String RETRY_ENABLED_PROPERTY = "mongodb.overload.retry.enabled";
 
   /**
-   * Whether the load phase retries shed rejections, and why.
+   * Whether the load phase retries overload rejections, and why.
    *
    * <p>Retry is on by default: an incomplete load produces a broken dataset and a
    * failing query phase, which is the whole problem PERF-8502 addresses, and it
@@ -183,7 +183,7 @@ final class LoadShedPolicy {
   }
 
   /**
-   * Decide whether the load phase should retry shed rejections.
+   * Decide whether the load phase should retry overload rejections.
    *
    * @param explicitSetting value of {@link #RETRY_ENABLED_PROPERTY}, or null when unset
    * @param maxExecutionTime value of YCSB's {@code maxexecutiontime}, or null when unset
