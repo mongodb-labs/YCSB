@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.HashSet;
 import java.util.Arrays;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Pure decision logic for MongoDB load-shedding responses: whether an exception is
@@ -117,5 +118,28 @@ final class LoadShedPolicy {
   static boolean isDuplicateKey(Throwable t) {
     return t instanceof MongoServerException
         && ((MongoServerException) t).getCode() == DUPLICATE_KEY_ERROR_CODE;
+  }
+
+  /** Initial backoff bound, in milliseconds. */
+  static final long BACKOFF_BASE_MS = 100;
+
+  /** Maximum backoff bound, in milliseconds. */
+  static final long BACKOFF_MAX_MS = 5000;
+
+  /**
+   * Upper bound of the full-jitter backoff window for {@code attempt}
+   * (1-based), doubling from {@link #BACKOFF_BASE_MS} and capped at
+   * {@link #BACKOFF_MAX_MS}. Separated from {@link #backoffDelayMs} so the
+   * schedule is testable without randomness.
+   */
+  static long backoffBoundMs(int attempt) {
+    int safeAttempt = Math.min(Math.max(attempt, 1), 30);
+    long uncapped = BACKOFF_BASE_MS * (1L << (safeAttempt - 1));
+    return Math.min(BACKOFF_MAX_MS, uncapped);
+  }
+
+  /** A full-jitter delay drawn uniformly from {@code [0, backoffBoundMs(attempt)]}. */
+  static long backoffDelayMs(int attempt) {
+    return ThreadLocalRandom.current().nextLong(backoffBoundMs(attempt) + 1);
   }
 }

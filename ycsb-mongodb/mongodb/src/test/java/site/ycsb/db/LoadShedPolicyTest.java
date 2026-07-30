@@ -78,4 +78,34 @@ public class LoadShedPolicyTest {
   public void isShedIsNullSafe() {
     assertFalse(LoadShedPolicy.isShed(null));
   }
+
+  @Test
+  public void backoffUpperBoundGrowsThenCaps() {
+    // Full jitter: the delay is drawn from [0, bound]. Assert the bound, which is
+    // deterministic, rather than the random draw.
+    assertEquals(LoadShedPolicy.backoffBoundMs(1), 100L);
+    assertEquals(LoadShedPolicy.backoffBoundMs(2), 200L);
+    assertEquals(LoadShedPolicy.backoffBoundMs(3), 400L);
+    assertEquals(LoadShedPolicy.backoffBoundMs(6), 3200L);
+    assertEquals(LoadShedPolicy.backoffBoundMs(7), 5000L);   // capped
+    assertEquals(LoadShedPolicy.backoffBoundMs(100), 5000L); // stays capped, no overflow
+  }
+
+  @Test
+  public void backoffBoundIsSafeForNonPositiveAttempts() {
+    assertEquals(LoadShedPolicy.backoffBoundMs(0), 100L);
+    assertEquals(LoadShedPolicy.backoffBoundMs(-5), 100L);
+  }
+
+  @Test
+  public void backoffDelayStaysWithinBound() {
+    for (int attempt = 1; attempt <= 20; attempt++) {
+      long bound = LoadShedPolicy.backoffBoundMs(attempt);
+      for (int i = 0; i < 50; i++) {
+        long delay = LoadShedPolicy.backoffDelayMs(attempt);
+        assertTrue(delay >= 0, "delay must be non-negative, got " + delay);
+        assertTrue(delay <= bound, "delay " + delay + " exceeded bound " + bound);
+      }
+    }
+  }
 }
