@@ -1,15 +1,25 @@
 package site.ycsb.db;
 
+import com.mongodb.MongoBulkWriteException;
 import com.mongodb.MongoCommandException;
 import com.mongodb.ServerAddress;
+import com.mongodb.bulk.BulkWriteError;
+import com.mongodb.bulk.BulkWriteInsert;
+import com.mongodb.bulk.BulkWriteResult;
+import com.mongodb.bulk.BulkWriteUpsert;
 import org.bson.BsonDocument;
 import org.bson.BsonInt32;
 import org.bson.BsonString;
 import org.bson.BsonArray;
 import org.testng.annotations.Test;
 
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertTrue;
 
 public class OverloadPolicyTest {
@@ -158,5 +168,181 @@ public class OverloadPolicyTest {
     for (OverloadPolicy.RetryMode mode : OverloadPolicy.RetryMode.values()) {
       assertTrue(mode.reason() != null && !mode.reason().isEmpty(), mode.name());
     }
+  }
+
+  // ── Single-document insert triage ────────────────────────────────
+
+  @Test
+  public void aFirstAttemptDuplicateIsFatal() {
+    // The collection was not empty when the load started: a setup problem that must
+    // surface rather than be absorbed as success.
+    assertEquals(OverloadPolicy.singleInsertOutcome(commandException(11000, false), 0),
+        OverloadPolicy.SingleInsertOutcome.FATAL);
+  }
+
+  @Test
+  public void aDuplicateOnRetryMeansTheWriteAlreadyLanded() {
+    assertEquals(OverloadPolicy.singleInsertOutcome(commandException(11000, false), 1),
+        OverloadPolicy.SingleInsertOutcome.ALREADY_COMMITTED);
+  }
+
+  @Test
+  public void anOverloadRejectionRetries() {
+    assertEquals(OverloadPolicy.singleInsertOutcome(commandException(449, true), 0),
+        OverloadPolicy.SingleInsertOutcome.RETRY);
+    assertEquals(OverloadPolicy.singleInsertOutcome(commandException(449, true), 7),
+        OverloadPolicy.SingleInsertOutcome.RETRY);
+  }
+
+  @Test
+  public void anUnrelatedErrorIsFatalOnEveryAttempt() {
+    assertEquals(OverloadPolicy.singleInsertOutcome(commandException(2, false), 0),
+        OverloadPolicy.SingleInsertOutcome.FATAL);
+    assertEquals(OverloadPolicy.singleInsertOutcome(commandException(2, false), 9),
+        OverloadPolicy.SingleInsertOutcome.FATAL);
+  }
+
+  // ── Batch triage ─────────────────────────────────────────────────
+
+  /** A per-item bulk write error. These never carry labels, only codes. */
+  private static BulkWriteError writeError(int code, int index) {
+    return new BulkWriteError(code, "synthetic", new BsonDocument(), index);
+  }
+
+  private static List<BulkWriteError> errors(BulkWriteError... e) {
+    return Arrays.asList(e);
+  }
+
+  @Test
+  public void recognisedOverloadCodesAreRetriedByIndex() {
+    OverloadPolicy.BulkRetryDecision d = OverloadPolicy.triageBulkErrors(
+        errors(writeError(449, 3), writeError(433, 7)), false, 0);
+
+    assertFalse(d.isFatal());
+    assertEquals(d.getRetryIndices(), Arrays.asList(3, 7));
+    assertFalse(d.usedLabelFallback(), "recognised codes must not count as fallback");
+  }
+
+  @Test
+  public void indicesReferToTheSubmittedListNotTheOriginalBatch() {
+    // After the first round the caller resubmits only the failures, so the driver
+    // renumbers from zero. The decision must pass those indices through untouched —
+    // remapping them against the original batch would corrupt the retry set.
+    OverloadPolicy.BulkRetryDecision d = OverloadPolicy.triageBulkErrors(
+        errors(writeError(449, 0), writeError(449, 1)), false, 4);
+
+    assertEquals(d.getRetryIndices(), Arrays.asList(0, 1));
+  }
+
+  @Test
+  public void aFirstAttemptDuplicateFailsTheWholeBatch() {
+    OverloadPolicy.BulkRetryDecision d = OverloadPolicy.triageBulkErrors(
+        errors(writeError(449, 0), writeError(11000, 1)), true, 0);
+
+    assertTrue(d.isFatal());
+  }
+
+  @Test
+  public void duplicatesOnRetryAreForgivenAndNotResubmitted() {
+    OverloadPolicy.BulkRetryDecision d = OverloadPolicy.triageBulkErrors(
+        errors(writeError(11000, 0), writeError(449, 1)), false, 2);
+
+    assertFalse(d.isFatal());
+    assertEquals(d.getRetryIndices(), Arrays.asList(1));
+  }
+
+  @Test
+  public void aBatchOfOnlyForgivenDuplicatesIsComplete() {
+    // Nothing left to retry and nothing wrong: every write committed before its
+    // rejection was reported. The caller must treat this as success, not a hang.
+    OverloadPolicy.BulkRetryDecision d = OverloadPolicy.triageBulkErrors(
+        errors(writeError(11000, 0), writeError(11000, 1)), false, 1);
+
+    assertFalse(d.isFatal());
+    assertTrue(d.getRetryIndices().isEmpty());
+  }
+
+  @Test
+  public void anUnrecognisedCodeWithoutTheLabelIsFatal() {
+    OverloadPolicy.BulkRetryDecision d = OverloadPolicy.triageBulkErrors(
+        errors(writeError(2, 0)), false, 0);
+
+    assertTrue(d.isFatal());
+  }
+
+  @Test
+  public void anUnrecognisedCodeUnderTheLabelIsRetriedButFlagged() {
+    // Forward compatibility: a new code in the SystemOverloadedError category must not
+    // hard-fail the load. But per-item errors carry no labels, so this is also what a
+    // genuine per-document error looks like inside an overloaded batch — hence the flag
+    // that lets the caller bound it.
+    OverloadPolicy.BulkRetryDecision d = OverloadPolicy.triageBulkErrors(
+        errors(writeError(9999, 5)), true, 0);
+
+    assertFalse(d.isFatal());
+    assertEquals(d.getRetryIndices(), Arrays.asList(5));
+    assertTrue(d.usedLabelFallback());
+  }
+
+  @Test
+  public void oneUnrecognisedCodeFlagsTheWholeRound() {
+    OverloadPolicy.BulkRetryDecision d = OverloadPolicy.triageBulkErrors(
+        errors(writeError(449, 0), writeError(9999, 1)), true, 3);
+
+    assertEquals(d.getRetryIndices(), Arrays.asList(0, 1));
+    assertTrue(d.usedLabelFallback());
+  }
+
+  @Test
+  public void theFallbackBoundIsSmallEnoughToFailFastAndLargeEnoughToRideOutAWave() {
+    // Guards the constant itself: it is the only thing standing between a malformed
+    // document and a load that never terminates.
+    assertTrue(OverloadPolicy.UNRECOGNISED_CODE_RETRY_LIMIT > 0);
+    assertTrue(OverloadPolicy.UNRECOGNISED_CODE_RETRY_LIMIT <= 50);
+  }
+
+  @Test
+  public void anEmptyErrorListRetriesNothing() {
+    OverloadPolicy.BulkRetryDecision d = OverloadPolicy.triageBulkErrors(
+        Collections.<BulkWriteError>emptyList(), false, 0);
+
+    assertFalse(d.isFatal());
+    assertTrue(d.getRetryIndices().isEmpty());
+  }
+
+  // ── Status attribution ───────────────────────────────────────────
+
+  @Test
+  public void aBatchRejectionReportsThePerItemCauseNotTheEnvelope() {
+    // MongoBulkWriteException extends MongoServerException but its top-level code is
+    // not a per-item code, so reading the cause off the envelope would collapse every
+    // batched rejection into OVERLOAD_OTHER.
+    MongoBulkWriteException e = bulkWriteException(writeError(462, 0));
+
+    assertEquals(OverloadPolicy.statusFor(e).getName(),
+        "OVERLOAD_INGRESS_REQUEST_RATE_LIMIT_EXCEEDED");
+  }
+
+  @Test
+  public void aBatchRejectionWithNoRecognisedCauseIsOverloadOther() {
+    MongoBulkWriteException e = bulkWriteException(writeError(9999, 0));
+    e.addLabel("SystemOverloadedError");
+
+    assertEquals(OverloadPolicy.statusFor(e).getName(), "OVERLOAD_OTHER");
+  }
+
+  @Test
+  public void aBatchOfPlainErrorsIsNotAnOverloadStatus() {
+    assertNull(OverloadPolicy.statusFor(bulkWriteException(writeError(2, 0))));
+  }
+
+  private static MongoBulkWriteException bulkWriteException(BulkWriteError... writeErrors) {
+    return new MongoBulkWriteException(
+        BulkWriteResult.acknowledged(0, 0, 0, 0, java.util.Collections.<BulkWriteUpsert>emptyList(),
+            java.util.Collections.<BulkWriteInsert>emptyList()),
+        Arrays.asList(writeErrors),
+        null,
+        new ServerAddress(),
+        java.util.Collections.<String>emptySet());
   }
 }

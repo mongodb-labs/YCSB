@@ -20,7 +20,6 @@ import com.mongodb.MongoServerException;
 import com.mongodb.ReadPreference;
 import com.mongodb.ServerAddress;
 import com.mongodb.WriteConcern;
-import com.mongodb.bulk.BulkWriteError;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoCollection;
@@ -434,11 +433,19 @@ public class MongoDbClient extends DB {
     /**
      * Sleep for the full-jitter backoff before the next attempt.
      *
-     * <p>Unbounded on purpose. The rate limiter holds for 30s at a time and a
-     * single load→execution gap has been observed rejecting over 375,000
-     * operations, so a long run of rejections is normal and must not fail the
-     * load. The outer bound is the Evergreen task timeout, and a driver-level
-     * timeoutMS is the principled bound once it is sized (spec D3).
+     * <p>Unbounded on purpose. The server's rate limiter holds for 30s at a time
+     * and a single load has been observed absorbing over 375,000 rejections, so a
+     * long run of rejections is normal behaviour under a hold rather than evidence
+     * of a hang; failing on it would abort exactly the loads this retry logic
+     * exists to make survivable.
+     *
+     * <p>That leaves the Evergreen task timeout as the only outer bound. A
+     * driver-level {@code timeoutMS} would be the principled one, but it cannot be
+     * sized from batch latency (see {@link #insertManyWithOverloadRetry} — with
+     * batching, the measured latency of one insert includes this method's sleeps,
+     * which {@code timeoutMS} does not observe), and setting it too low converts a
+     * survivable overload episode into a hard failure, because a driver timeout is
+     * not an overload error and propagates. Tracked on PERF-8502.
      *
      * <p>Logs at widening intervals so a load that never progresses is still
      * diagnosable from the task log.
@@ -474,15 +481,17 @@ public class MongoDbClient extends DB {
                 collection.insertOne(doc);
                 return;
             } catch (Exception e) {
-                if (attempt > 0 && OverloadPolicy.isDuplicateKey(e)) {
+                switch (OverloadPolicy.singleInsertOutcome(e, attempt)) {
+                case ALREADY_COMMITTED:
                     return;
-                }
-                if (!OverloadPolicy.isOverload(e)) {
+                case RETRY:
+                    attempt++;
+                    recordOverloadRetry("INSERT");
+                    awaitRetry("INSERT", attempt);
+                    break;
+                default:
                     throw e;
                 }
-                attempt++;
-                recordOverloadRetry("INSERT");
-                awaitRetry("INSERT", attempt);
             }
         }
     }
@@ -494,46 +503,52 @@ public class MongoDbClient extends DB {
      * the batch: successful entries commit, and only the overload indices are
      * retried. Duplicate-key errors are forgiven from attempt 1 onward, for the
      * same reason as {@link #insertOneWithOverloadRetry}.
+     *
+     * <p>Classification lives in {@link OverloadPolicy#triageBulkErrors}; this
+     * method only maps indices back to documents and does the waiting.
      */
     private void insertManyWithOverloadRetry(MongoCollection<Document> collection,
                                              List<Document> docs) throws Exception {
         InsertManyOptions options = new InsertManyOptions().ordered(false);
         List<Document> remaining = docs;
         int attempt = 0;
+        int labelFallbackRounds = 0;
         while (!remaining.isEmpty()) {
             try {
                 collection.insertMany(remaining, options);
                 return;
             } catch (MongoBulkWriteException e) {
-                List<Document> retry = new ArrayList<Document>();
-                boolean sawOverload = false;
-                for (BulkWriteError err : e.getWriteErrors()) {
-                    if (err.getCode() == OverloadPolicy.DUPLICATE_KEY_ERROR_CODE) {
-                        if (attempt == 0) {
-                            // Collection was not empty at load start — a setup
-                            // problem, not overloading. Surface it.
-                            throw e;
-                        }
-                        continue; // committed on an earlier attempt
-                    }
-                    if (OverloadPolicy.OVERLOAD_ERROR_CODES.contains(err.getCode())
-                        || e.hasErrorLabel(OverloadPolicy.OVERLOAD_LABEL)) {
-                        // The label fallback keeps a future overload code from
-                        // hard-failing the load.
-                        sawOverload = true;
-                        retry.add(remaining.get(err.getIndex()));
-                        continue;
-                    }
-                    throw e; // genuine per-write error
+                OverloadPolicy.BulkRetryDecision decision = OverloadPolicy.triageBulkErrors(
+                    e.getWriteErrors(), e.hasErrorLabel(OverloadPolicy.OVERLOAD_LABEL), attempt);
+                if (decision.isFatal()) {
+                    throw e;
                 }
-                if (retry.isEmpty()) {
+                if (decision.getRetryIndices().isEmpty()) {
+                    // Every remaining error was a forgiven duplicate: the batch landed.
                     return;
                 }
-                if (sawOverload) {
-                    attempt++;
-                    recordOverloadRetry("INSERT");
-                    awaitRetry("INSERT", attempt);
+                if (decision.usedLabelFallback()) {
+                    labelFallbackRounds++;
+                    if (labelFallbackRounds > OverloadPolicy.UNRECOGNISED_CODE_RETRY_LIMIT) {
+                        // An unrecognised code has survived every retry. More likely a
+                        // genuine per-document error inside an overloaded batch than a
+                        // new overload code, so stop guessing and fail loudly.
+                        System.err.println("[OVERLOAD-RETRY] giving up after "
+                            + labelFallbackRounds + " rounds retrying unrecognised error "
+                            + "codes under the " + OverloadPolicy.OVERLOAD_LABEL + " label; "
+                            + "treating them as a genuine write error.");
+                        throw e;
+                    }
+                } else {
+                    labelFallbackRounds = 0;
                 }
+                List<Document> retry = new ArrayList<Document>(decision.getRetryIndices().size());
+                for (Integer index : decision.getRetryIndices()) {
+                    retry.add(remaining.get(index));
+                }
+                attempt++;
+                recordOverloadRetry("INSERT");
+                awaitRetry("INSERT", attempt);
                 remaining = retry;
             } catch (MongoServerException e) {
                 if (!OverloadPolicy.isOverload(e)) {
@@ -886,13 +901,23 @@ public class MongoDbClient extends DB {
               if (!inLoadPhase) {
                 Status overload = OverloadPolicy.statusFor(e);
                 if (overload != null) {
+                  // Drop the rejected batch. A measurement-phase rejection is a lost
+                  // transaction, not lost data, and the batch must not be carried
+                  // forward: under sustained rejection the accumulating list would
+                  // grow without bound and each resubmission would get larger.
                   insertCount = 0;
                   return overload;
                 }
               }
+              // Stock behaviour, deliberately unchanged: the batch is left in place so
+              // the next insert() resubmits it. This path is what runs when retry is
+              // disabled, and one of the reasons retry is switchable is so the same
+              // binary can also serve as a customer-representative canary that fails
+              // on overload the way unmodified YCSB does. Any drift here — including
+              // dropping the batch, which is arguably the better behaviour — makes
+              // that canary measure something other than stock.
               System.err.println("Exception while trying bulk insert with " + insertCount);
               e.printStackTrace();
-              insertCount = 0;
               return Status.ERROR;
             }
         }

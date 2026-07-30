@@ -5,8 +5,10 @@ import com.mongodb.MongoServerException;
 import com.mongodb.bulk.BulkWriteError;
 import site.ycsb.Status;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.HashSet;
@@ -101,13 +103,41 @@ final class OverloadPolicy {
   /**
    * The {@link Status} representing {@code t}, or {@code null} when {@code t} is
    * not an overload rejection.
+   *
+   * <p>The bulk case is checked first even though {@link MongoBulkWriteException}
+   * extends {@link MongoServerException}: the top-level code on a bulk exception is
+   * not a per-item error code, so treating it as one would collapse every batched
+   * rejection into {@link #OVERLOAD_OTHER} and lose per-cause attribution. The
+   * per-item codes carry the real cause.
    */
   static Status statusFor(Throwable t) {
     if (!isOverload(t)) {
       return null;
     }
+    if (t instanceof MongoBulkWriteException) {
+      return bulkStatus((MongoBulkWriteException) t);
+    }
     if (t instanceof MongoServerException) {
       return statusForCode(((MongoServerException) t).getCode());
+    }
+    return OVERLOAD_OTHER;
+  }
+
+  /**
+   * The {@link Status} for a batch rejection: the cause of the first recognised
+   * per-item overload error.
+   *
+   * <p>A batch can in principle be rejected for more than one reason. Reporting the
+   * first recognised cause keeps the metric one-op-one-status, which is what YCSB's
+   * per-status histograms require; the alternative (a synthetic "mixed" status) would
+   * create a category nobody has a threshold for.
+   */
+  private static Status bulkStatus(MongoBulkWriteException e) {
+    for (BulkWriteError err : e.getWriteErrors()) {
+      Status s = OVERLOAD_STATUS_BY_CODE.get(err.getCode());
+      if (s != null) {
+        return s;
+      }
     }
     return OVERLOAD_OTHER;
   }
@@ -116,6 +146,134 @@ final class OverloadPolicy {
   static boolean isDuplicateKey(Throwable t) {
     return t instanceof MongoServerException
         && ((MongoServerException) t).getCode() == DUPLICATE_KEY_ERROR_CODE;
+  }
+
+  /**
+   * How many consecutive retry rounds may be driven purely by the error-label
+   * fallback before the load gives up.
+   *
+   * <p>The fallback exists so that a *new* overload code, added to the
+   * SystemOverloadedError category after this was written, still gets retried
+   * instead of hard-failing the load. But per-item bulk write errors carry no
+   * labels, so the fallback has to read the label off the enclosing batch — which
+   * means an ordinary per-document error (a malformed value, say) sitting in a
+   * batch that was also rejected for overload looks identical to a new overload
+   * code. Retrying that forever turns a one-document bug into a hung load.
+   *
+   * <p>A bound resolves the ambiguity in the direction that fails loudly: a real
+   * overload wave clears and the counter resets, while a genuine per-document
+   * error survives every round and surfaces.
+   */
+  static final int UNRECOGNISED_CODE_RETRY_LIMIT = 10;
+
+  /**
+   * What to do with the per-item errors of one rejected batch.
+   *
+   * <p>Pure data: {@link MongoDbClient} maps the indices back to documents and does
+   * the sleeping. See {@link #triageBulkErrors}.
+   */
+  static final class BulkRetryDecision {
+
+    private final List<Integer> retryIndices;
+    private final boolean fatal;
+    private final boolean usedLabelFallback;
+
+    private BulkRetryDecision(List<Integer> retryIndices, boolean fatal,
+        boolean usedLabelFallback) {
+      this.retryIndices = retryIndices;
+      this.fatal = fatal;
+      this.usedLabelFallback = usedLabelFallback;
+    }
+
+    /** True when the batch must be propagated rather than retried. */
+    boolean isFatal() {
+      return fatal;
+    }
+
+    /**
+     * Indices, into the list that was submitted, of the entries to retry. Empty
+     * with {@link #isFatal()} false means every entry landed (all remaining errors
+     * were forgiven duplicates).
+     */
+    List<Integer> getRetryIndices() {
+      return retryIndices;
+    }
+
+    /**
+     * True when at least one retry index came from the label fallback rather than
+     * a recognised overload code, i.e. this round may be retrying a genuine
+     * per-document error. Bounded by {@link #UNRECOGNISED_CODE_RETRY_LIMIT}.
+     */
+    boolean usedLabelFallback() {
+      return usedLabelFallback;
+    }
+  }
+
+  private static final BulkRetryDecision FATAL =
+      new BulkRetryDecision(Collections.<Integer>emptyList(), true, false);
+
+  /**
+   * Classify the per-item errors of a rejected batch.
+   *
+   * <p>Duplicate keys are forgiven from attempt 1 onward — the write committed
+   * before its rejection was reported, and YCSB load keys are deterministic and
+   * unique. On attempt 0 a duplicate means the collection was not empty when the
+   * load started, which is a setup problem and must surface (stock YCSB fails here
+   * too).
+   *
+   * @param errors per-item write errors, whose {@code getIndex()} refers to the
+   *     submitted list
+   * @param hasOverloadLabel whether the enclosing exception carried
+   *     {@link #OVERLOAD_LABEL}
+   * @param attempt 0 on the first submission of this batch, incrementing per retry
+   */
+  static BulkRetryDecision triageBulkErrors(List<BulkWriteError> errors,
+      boolean hasOverloadLabel, int attempt) {
+    List<Integer> retryIndices = new ArrayList<Integer>();
+    boolean usedLabelFallback = false;
+    for (BulkWriteError err : errors) {
+      int code = err.getCode();
+      if (code == DUPLICATE_KEY_ERROR_CODE) {
+        if (attempt == 0) {
+          return FATAL;
+        }
+        continue;
+      }
+      if (OVERLOAD_ERROR_CODES.contains(code)) {
+        retryIndices.add(err.getIndex());
+        continue;
+      }
+      if (hasOverloadLabel) {
+        usedLabelFallback = true;
+        retryIndices.add(err.getIndex());
+        continue;
+      }
+      return FATAL;
+    }
+    return new BulkRetryDecision(retryIndices, false, usedLabelFallback);
+  }
+
+  /** What to do with a single-document insert failure. */
+  enum SingleInsertOutcome {
+    /** A duplicate key on a retry: the original attempt committed. Treat as success. */
+    ALREADY_COMMITTED,
+    /** An overload rejection. Back off and try again. */
+    RETRY,
+    /** Anything else. Propagate. */
+    FATAL
+  }
+
+  /**
+   * Classify a single-document insert failure.
+   *
+   * @param t the exception thrown by the insert
+   * @param attempt 0 on the first submission, incrementing per retry
+   */
+  static SingleInsertOutcome singleInsertOutcome(Throwable t, int attempt) {
+    if (attempt > 0 && isDuplicateKey(t)) {
+      return SingleInsertOutcome.ALREADY_COMMITTED;
+    }
+    return isOverload(t) ? SingleInsertOutcome.RETRY : SingleInsertOutcome.FATAL;
   }
 
   /** Initial backoff bound, in milliseconds. */
