@@ -52,7 +52,6 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -61,7 +60,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.Vector;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -894,18 +892,19 @@ public class MongoDbClient extends DB {
              insertCount = 0;
              return Status.OK;
            }
-           catch (Exception e) {
-             insertCount = 0;
-             if (!inLoadPhase) {
-               Status shed = LoadShedPolicy.statusFor(e);
-               if (shed != null) {
-                 return shed;
-               }
-             }
-             System.err.println("Exception while trying bulk insert with " + insertCount);
-             e.printStackTrace();
-             return Status.ERROR;
-           }
+            catch (Exception e) {
+              if (!inLoadPhase) {
+                Status shed = LoadShedPolicy.statusFor(e);
+                if (shed != null) {
+                  insertCount = 0;
+                  return shed;
+                }
+              }
+              System.err.println("Exception while trying bulk insert with " + insertCount);
+              e.printStackTrace();
+              insertCount = 0;
+              return Status.ERROR;
+            }
         }
     }
 
