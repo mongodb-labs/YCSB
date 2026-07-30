@@ -109,41 +109,6 @@ public class LoadShedPolicyTest {
   }
 
   @Test
-  public void stallDetectorFiresOnlyAfterSilenceWindow() {
-    LoadShedPolicy.StallDetector d = new LoadShedPolicy.StallDetector(30_000L);
-    d.start(1_000_000L);
-    assertFalse(d.isStalled(1_000_000L + 29_999L));
-    assertTrue(d.isStalled(1_000_000L + 30_001L));
-  }
-
-  @Test
-  public void anySuccessResetsTheStallClock() {
-    LoadShedPolicy.StallDetector d = new LoadShedPolicy.StallDetector(30_000L);
-    d.start(0L);
-    // 29s of shedding, then one thread lands a write.
-    d.recordSuccess(29_000L);
-    // The window restarts from the success, so the original deadline passes quietly.
-    assertFalse(d.isStalled(31_000L));
-    assertFalse(d.isStalled(58_000L));
-    assertTrue(d.isStalled(60_000L));
-  }
-
-  @Test
-  public void stallDetectorNeverFiresBeforeStart() {
-    // Guards the "initialise at load start, not 0" requirement: an unstarted
-    // detector must not report a stall from epoch 0.
-    LoadShedPolicy.StallDetector d = new LoadShedPolicy.StallDetector(30_000L);
-    assertFalse(d.isStalled(System.currentTimeMillis()));
-  }
-
-  @Test
-  public void zeroOrNegativeWindowDisablesTheDetector() {
-    LoadShedPolicy.StallDetector d = new LoadShedPolicy.StallDetector(0L);
-    d.start(0L);
-    assertFalse(d.isStalled(Long.MAX_VALUE / 2));
-  }
-
-  @Test
   public void retryIsOnByDefaultForARecordBoundedLoad() {
     // No explicit property, no maxexecutiontime: the ordinary setup load.
     LoadShedPolicy.RetryMode mode = LoadShedPolicy.retryModeForLoad(null, null);

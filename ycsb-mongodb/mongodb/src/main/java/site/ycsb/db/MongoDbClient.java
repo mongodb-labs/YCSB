@@ -163,9 +163,6 @@ public class MongoDbClient extends DB {
     /** Ensures the resolved retry mode is printed once per JVM, not once per thread. */
     private static boolean retryModeLogged = false;
 
-    /** Shared across all load threads; see LoadShedPolicy.StallDetector. */
-    private static volatile LoadShedPolicy.StallDetector stallDetector = null;
-
     private static String generateSchema(String keyId, int numFields) {
         StringBuilder schema = new StringBuilder();
 
@@ -434,32 +431,28 @@ public class MongoDbClient extends DB {
         loadShedRetries.computeIfAbsent(op, k -> new AtomicLong()).incrementAndGet();
     }
 
-    /** Thrown when the whole load has made no progress for the silence window. */
-    private static final class LoadShedStallException extends RuntimeException {
-        private LoadShedStallException(String message) {
-            super(message);
-        }
-    }
-
-    /** Sleep for the full-jitter backoff, failing fast if the load has stalled. */
-    private static void awaitRetry(int attempt) {
-        long now = System.currentTimeMillis();
-        if (stallDetector != null && stallDetector.isStalled(now)) {
-            throw new LoadShedStallException(
-                "Load shedding stall: no successful insert from any thread for more than "
-                + "mongodb.loadshed.stall.max_silence_ms. Failing the load phase rather "
-                + "than retrying indefinitely.");
+    /**
+     * Sleep for the full-jitter backoff before the next attempt.
+     *
+     * <p>Unbounded on purpose. The rate limiter holds for 30s at a time and a
+     * single load→execution gap has been observed rejecting over 375,000
+     * operations, so a long run of rejections is normal and must not fail the
+     * load. The outer bound is the Evergreen task timeout, and a driver-level
+     * timeoutMS is the principled bound once it is sized (spec D3).
+     *
+     * <p>Logs at widening intervals so a load that never progresses is still
+     * diagnosable from the task log.
+     */
+    private static void awaitRetry(String op, int attempt) {
+        if (attempt == 10 || attempt == 50 || (attempt >= 100 && attempt % 100 == 0)) {
+            System.err.println("[LOAD-SHED-RETRY] " + op + " still retrying after "
+                + attempt + " shed rejections on this operation; the server is "
+                + "rejecting writes and the load is waiting it out.");
         }
         try {
             Thread.sleep(LoadShedPolicy.backoffDelayMs(attempt));
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
-        }
-    }
-
-    private static void recordProgress() {
-        if (stallDetector != null) {
-            stallDetector.recordSuccess(System.currentTimeMillis());
         }
     }
 
@@ -479,11 +472,9 @@ public class MongoDbClient extends DB {
         while (true) {
             try {
                 collection.insertOne(doc);
-                recordProgress();
                 return;
             } catch (Exception e) {
                 if (attempt > 0 && LoadShedPolicy.isDuplicateKey(e)) {
-                    recordProgress();
                     return;
                 }
                 if (!LoadShedPolicy.isShed(e)) {
@@ -491,7 +482,7 @@ public class MongoDbClient extends DB {
                 }
                 attempt++;
                 recordLoadShedRetry("INSERT");
-                awaitRetry(attempt);
+                awaitRetry("INSERT", attempt);
             }
         }
     }
@@ -512,7 +503,6 @@ public class MongoDbClient extends DB {
         while (!remaining.isEmpty()) {
             try {
                 collection.insertMany(remaining, options);
-                recordProgress();
                 return;
             } catch (MongoBulkWriteException e) {
                 List<Document> retry = new ArrayList<Document>();
@@ -536,16 +526,13 @@ public class MongoDbClient extends DB {
                     }
                     throw e; // genuine per-write error
                 }
-                if (e.getWriteResult().getInsertedCount() > 0) {
-                    recordProgress();
-                }
                 if (retry.isEmpty()) {
                     return;
                 }
                 if (sawShed) {
                     attempt++;
                     recordLoadShedRetry("INSERT");
-                    awaitRetry(attempt);
+                    awaitRetry("INSERT", attempt);
                 }
                 remaining = retry;
             } catch (MongoServerException e) {
@@ -554,7 +541,7 @@ public class MongoDbClient extends DB {
                 }
                 attempt++;
                 recordLoadShedRetry("INSERT");
-                awaitRetry(attempt);
+                awaitRetry("INSERT", attempt);
             }
         }
     }
