@@ -142,4 +142,56 @@ public class LoadShedPolicyTest {
     d.start(0L);
     assertFalse(d.isStalled(Long.MAX_VALUE / 2));
   }
+
+  @Test
+  public void retryIsOnByDefaultForARecordBoundedLoad() {
+    // No explicit property, no maxexecutiontime: the ordinary setup load.
+    LoadShedPolicy.RetryMode mode = LoadShedPolicy.retryModeForLoad(null, null);
+    assertEquals(mode, LoadShedPolicy.RetryMode.ENABLED_BY_DEFAULT);
+    assertTrue(mode.isEnabled());
+  }
+
+  @Test
+  public void retryIsOffForATimeCappedLoad() {
+    // ycsb.load.2024-05 and heat_4x_ycsb.load measure their load phase against a
+    // clock, so backoff would eat the measured window.
+    LoadShedPolicy.RetryMode mode = LoadShedPolicy.retryModeForLoad(null, "600");
+    assertEquals(mode, LoadShedPolicy.RetryMode.DISABLED_TIME_CAPPED_LOAD);
+    assertFalse(mode.isEnabled());
+  }
+
+  @Test
+  public void aZeroTimeCapDoesNotCountAsCapped() {
+    assertTrue(LoadShedPolicy.retryModeForLoad(null, "0").isEnabled());
+  }
+
+  @Test
+  public void aBlankOrUnparseableTimeCapDoesNotCountAsCapped() {
+    // Unresolved config interpolation must not silently disable retry.
+    assertTrue(LoadShedPolicy.retryModeForLoad(null, "").isEnabled());
+    assertTrue(LoadShedPolicy.retryModeForLoad(null, "   ").isEnabled());
+    assertTrue(LoadShedPolicy.retryModeForLoad(null, "${notresolved}").isEnabled());
+  }
+
+  @Test
+  public void explicitPropertyWinsOverTheTimeCap() {
+    assertEquals(LoadShedPolicy.retryModeForLoad("true", "600"),
+        LoadShedPolicy.RetryMode.ENABLED_BY_PROPERTY);
+    assertTrue(LoadShedPolicy.retryModeForLoad("true", "600").isEnabled());
+  }
+
+  @Test
+  public void explicitPropertyCanDisableARecordBoundedLoad() {
+    assertEquals(LoadShedPolicy.retryModeForLoad("false", null),
+        LoadShedPolicy.RetryMode.DISABLED_BY_PROPERTY);
+    assertFalse(LoadShedPolicy.retryModeForLoad("false", null).isEnabled());
+  }
+
+  @Test
+  public void everyRetryModeExplainsItself() {
+    // The reason is logged at load start, so it must never be empty.
+    for (LoadShedPolicy.RetryMode mode : LoadShedPolicy.RetryMode.values()) {
+      assertTrue(mode.reason() != null && !mode.reason().isEmpty(), mode.name());
+    }
+  }
 }

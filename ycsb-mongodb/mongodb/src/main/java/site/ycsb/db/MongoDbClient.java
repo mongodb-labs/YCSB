@@ -154,13 +154,14 @@ public class MongoDbClient extends DB {
     private static volatile boolean inLoadPhase = false;
 
     /**
-     * Opt-in per task via ycsb.property.load_extras. Off by default because
-     * dotransactions=false is true for every YCSB load, including tasks whose
-     * load phase is itself the measurement (ycsb.load.2024-05, heat_4x_ycsb.load):
-     * retrying there would spend a time-capped measurement window on backoff
-     * sleeps and register as a throughput regression.
+     * Whether the load phase retries shed rejections. Resolved once in init() by
+     * LoadShedPolicy.retryModeForLoad; on by default. Only meaningful when
+     * inLoadPhase is true.
      */
-    private static volatile boolean loadShedRetryEnabled = false;
+    private static volatile boolean loadShedRetryEnabled = true;
+
+    /** Ensures the resolved retry mode is printed once per JVM, not once per thread. */
+    private static boolean retryModeLogged = false;
 
     /** Shared across all load threads; see LoadShedPolicy.StallDetector. */
     private static volatile LoadShedPolicy.StallDetector stallDetector = null;
@@ -577,15 +578,17 @@ public class MongoDbClient extends DB {
             // YCSB sets dotransactions=false when invoked with -load. Default
             // ("true") covers the run/transaction path.
             inLoadPhase = "false".equalsIgnoreCase(props.getProperty("dotransactions", "true"));
-            loadShedRetryEnabled = Boolean.parseBoolean(
-                props.getProperty("mongodb.loadshed.retry.enabled", "false"));
-            long maxSilenceMs = Long.parseLong(props.getProperty(
-                "mongodb.loadshed.stall.max_silence_ms",
-                Long.toString(LoadShedPolicy.DEFAULT_STALL_MAX_SILENCE_MS)));
-            synchronized (MongoDbClient.class) {
-                if (stallDetector == null) {
-                    stallDetector = new LoadShedPolicy.StallDetector(maxSilenceMs);
-                    stallDetector.start(System.currentTimeMillis());
+            if (inLoadPhase) {
+                LoadShedPolicy.RetryMode retryMode = LoadShedPolicy.retryModeForLoad(
+                    props.getProperty(LoadShedPolicy.RETRY_ENABLED_PROPERTY),
+                    props.getProperty("maxexecutiontime"));
+                loadShedRetryEnabled = retryMode.isEnabled();
+                synchronized (MongoDbClient.class) {
+                    if (!retryModeLogged) {
+                        retryModeLogged = true;
+                        System.out.println("[LOAD-SHED-RETRY], Mode, " + retryMode.name());
+                        System.out.println("[LOAD-SHED-RETRY], Reason, " + retryMode.reason());
+                    }
                 }
             }
 
