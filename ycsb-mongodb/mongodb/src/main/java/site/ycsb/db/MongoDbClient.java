@@ -433,19 +433,19 @@ public class MongoDbClient extends DB {
     /**
      * Sleep for the full-jitter backoff before the next attempt.
      *
-     * <p>Unbounded on purpose. The server's rate limiter holds for 30s at a time
-     * and a single load has been observed absorbing over 375,000 rejections, so a
-     * long run of rejections is normal behaviour under a hold rather than evidence
-     * of a hang; failing on it would abort exactly the loads this retry logic
-     * exists to make survivable.
+     * <p>The retry loop above has no attempt limit. The server's rate limiter holds
+     * for 30s at a time, and a single load has been observed absorbing over 375,000
+     * rejections, so a long run of rejections is normal behaviour under a hold
+     * rather than evidence of a hang. Failing on it would abort exactly the loads
+     * this retry logic exists to make survivable.
      *
      * <p>That leaves the Evergreen task timeout as the only outer bound. A
      * driver-level {@code timeoutMS} would be the principled one, but it cannot be
-     * sized from batch latency (see {@link #insertManyWithOverloadRetry} — with
-     * batching, the measured latency of one insert includes this method's sleeps,
-     * which {@code timeoutMS} does not observe), and setting it too low converts a
-     * survivable overload episode into a hard failure, because a driver timeout is
-     * not an overload error and propagates. Tracked on PERF-8502.
+     * sized from the batch latencies we measure, because with batching the recorded
+     * latency of one insert includes this method's sleeps and {@code timeoutMS}
+     * never sees them. Setting it too low is worse than leaving it unset: a driver
+     * timeout is not an overload error, so it propagates and turns a survivable
+     * episode into a failed load. Tracked on PERF-8502.
      *
      * <p>Logs at widening intervals so a load that never progresses is still
      * diagnosable from the task log.
@@ -469,9 +469,9 @@ public class MongoDbClient extends DB {
      * <p>Idempotent because YCSB load keys are deterministic and unique: a
      * duplicate-key error on a retry means the original attempt actually
      * committed before its rejection was reported, so it counts as success.
-     * Only forgiven from attempt 1 onward — a duplicate on the very first
-     * attempt means the collection was not empty, which is a setup problem and
-     * must surface (stock YCSB fails here too).
+     * Only forgiven from attempt 1 onward: a duplicate on the very first attempt
+     * means the collection was not empty, which is a setup problem and must
+     * surface (stock YCSB fails here too).
      */
     private void insertOneWithOverloadRetry(MongoCollection<Document> collection, Document doc)
         throws Exception {
@@ -913,9 +913,9 @@ public class MongoDbClient extends DB {
               // the next insert() resubmits it. This path is what runs when retry is
               // disabled, and one of the reasons retry is switchable is so the same
               // binary can also serve as a customer-representative canary that fails
-              // on overload the way unmodified YCSB does. Any drift here — including
-              // dropping the batch, which is arguably the better behaviour — makes
-              // that canary measure something other than stock.
+              // on overload the way unmodified YCSB does. Any drift here makes that
+              // canary measure something other than stock, including dropping the
+              // batch, which is arguably the better behaviour.
               System.err.println("Exception while trying bulk insert with " + insertCount);
               e.printStackTrace();
               return Status.ERROR;

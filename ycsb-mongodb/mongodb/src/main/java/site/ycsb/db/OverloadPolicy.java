@@ -18,8 +18,8 @@ import java.util.concurrent.ThreadLocalRandom;
  * Pure decision logic for MongoDB overload responses: whether an exception is
  * an overload rejection, which {@link Status} represents it, and how long to back off.
  *
- * <p>Deliberately free of driver calls and I/O so it can be unit-tested without a
- * live server. {@link MongoDbClient} owns all actual database interaction.
+ * <p>Free of driver calls and I/O, so it can be unit-tested without a live server.
+ * {@link MongoDbClient} owns all actual database interaction.
  */
 final class OverloadPolicy {
 
@@ -155,7 +155,7 @@ final class OverloadPolicy {
    * <p>The fallback exists so that a *new* overload code, added to the
    * SystemOverloadedError category after this was written, still gets retried
    * instead of hard-failing the load. But per-item bulk write errors carry no
-   * labels, so the fallback has to read the label off the enclosing batch — which
+   * labels, so the fallback has to read the label off the enclosing batch. That
    * means an ordinary per-document error (a malformed value, say) sitting in a
    * batch that was also rejected for overload looks identical to a new overload
    * code. Retrying that forever turns a one-document bug into a hung load.
@@ -215,7 +215,7 @@ final class OverloadPolicy {
   /**
    * Classify the per-item errors of a rejected batch.
    *
-   * <p>Duplicate keys are forgiven from attempt 1 onward — the write committed
+   * <p>Duplicate keys are forgiven from attempt 1 onward: the write committed
    * before its rejection was reported, and YCSB load keys are deterministic and
    * unique. On attempt 0 a duplicate means the collection was not empty when the
    * load started, which is a setup problem and must surface (stock YCSB fails here
@@ -360,9 +360,9 @@ final class OverloadPolicy {
   /**
    * True when {@code maxExecutionTime} is a positive number.
    *
-   * <p>Anything unparseable is treated as absent on purpose: an unresolved config
-   * interpolation must not quietly switch retry off, because that would reintroduce
-   * the incomplete-load failure with no visible cause.
+   * <p>Anything unparseable counts as absent: an unresolved config interpolation
+   * must not quietly switch retry off, because that would reintroduce the
+   * incomplete-load failure with no visible cause.
    */
   private static boolean isTimeCapped(String maxExecutionTime) {
     if (maxExecutionTime == null || maxExecutionTime.trim().isEmpty()) {
