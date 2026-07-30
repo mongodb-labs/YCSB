@@ -12,6 +12,7 @@ import java.util.Set;
 import java.util.HashSet;
 import java.util.Arrays;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Pure decision logic for MongoDB load-shedding responses: whether an exception is
@@ -141,5 +142,56 @@ final class LoadShedPolicy {
   /** A full-jitter delay drawn uniformly from {@code [0, backoffBoundMs(attempt)]}. */
   static long backoffDelayMs(int attempt) {
     return ThreadLocalRandom.current().nextLong(backoffBoundMs(attempt) + 1);
+  }
+
+  /** Default global-silence window before a stalled load fails, in milliseconds. */
+  static final long DEFAULT_STALL_MAX_SILENCE_MS = 30_000L;
+
+  /**
+   * Detects a load that has stopped making progress entirely.
+   *
+   * <p>Shared across all load threads: any successful insert resets the clock, so
+   * this fires only when every thread is simultaneously blocked on rejections —
+   * a far stronger signal than a single slow thread. Checked before each retry
+   * sleep.
+   *
+   * <p>Known limitation: only reached while threads are actively looping on
+   * rejections. If the server stops responding and threads block inside the
+   * driver, nothing calls {@link #isStalled} — use a driver-level
+   * {@code timeoutMS} to convert that case into an exception (see spec D3).
+   */
+  static final class StallDetector {
+    private final long maxSilenceMs;
+    private final AtomicLong lastProgressMs = new AtomicLong(0L);
+
+    StallDetector(long maxSilenceMs) {
+      this.maxSilenceMs = maxSilenceMs;
+    }
+
+    /** Arm the detector. Must be called when the load phase begins. */
+    void start(long nowMs) {
+      lastProgressMs.set(nowMs);
+    }
+
+    /** Record forward progress by any thread. */
+    void recordSuccess(long nowMs) {
+      // Monotonic: concurrent successes must not move the clock backwards.
+      long prev = lastProgressMs.get();
+      while (nowMs > prev && !lastProgressMs.compareAndSet(prev, nowMs)) {
+        prev = lastProgressMs.get();
+      }
+    }
+
+    /** True when no thread has made progress for longer than the silence window. */
+    boolean isStalled(long nowMs) {
+      if (maxSilenceMs <= 0) {
+        return false;
+      }
+      long last = lastProgressMs.get();
+      if (last == 0L) {
+        return false; // never started
+      }
+      return (nowMs - last) > maxSilenceMs;
+    }
   }
 }
