@@ -14,7 +14,9 @@ package site.ycsb.db;
 import com.mongodb.AutoEncryptionSettings;
 import com.mongodb.ClientEncryptionSettings;
 import com.mongodb.ConnectionString;
+import com.mongodb.MongoBulkWriteException;
 import com.mongodb.MongoClientSettings;
+import com.mongodb.MongoServerException;
 import com.mongodb.ReadPreference;
 import com.mongodb.ServerAddress;
 import com.mongodb.WriteConcern;
@@ -24,6 +26,7 @@ import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoCursor;
 import com.mongodb.client.MongoDatabase;
 import com.mongodb.client.model.CreateCollectionOptions;
+import com.mongodb.client.model.InsertManyOptions;
 import com.mongodb.client.model.vault.DataKeyOptions;
 import com.mongodb.client.result.UpdateResult;
 import com.mongodb.client.vault.ClientEncryption;
@@ -55,7 +58,9 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.UUID;
 import java.util.Vector;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import java.util.Arrays;
 
@@ -132,6 +137,30 @@ public class MongoDbClient extends DB {
     private static Encryption encryptionType = Encryption.UNENCRYPTED;
     private static ArrayList<Long> contentionFactors;
     private static HashMap<String, DiscreteGenerator> discreteFields;
+
+    /**
+     * Per-op count of retry attempts incurred while waiting out overload
+     * during the load phase. Test-phase overload responses are absorbed
+     * without retry, so this counter is only incremented during load.
+     */
+    private static final ConcurrentHashMap<String, AtomicLong> overloadRetries =
+        new ConcurrentHashMap<String, AtomicLong>();
+
+    /**
+     * True only during the YCSB load phase. YCSB sets dotransactions=false when
+     * invoked with -load.
+     */
+    private static volatile boolean inLoadPhase = false;
+
+    /**
+     * Whether the load phase retries overload rejections. Resolved once in init() by
+     * OverloadPolicy.retryModeForLoad; on by default. Only meaningful when
+     * inLoadPhase is true.
+     */
+    private static volatile boolean overloadRetryEnabled = true;
+
+    /** Ensures the resolved retry mode is printed once per JVM, not once per thread. */
+    private static boolean retryModeLogged = false;
 
     private static String generateSchema(String keyId, int numFields) {
         StringBuilder schema = new StringBuilder();
@@ -392,6 +421,147 @@ public class MongoDbClient extends DB {
     }
 
     /**
+     * Increment the per-op overload retry counter. Only called during the
+     * load phase, so {@code <op>_overload_retries} captures retry pressure
+     * incurred to land the dataset, distinct from the
+     * {@code <op>_overload_count} event count.
+     */
+    private static void recordOverloadRetry(String op) {
+        overloadRetries.computeIfAbsent(op, k -> new AtomicLong()).incrementAndGet();
+    }
+
+    /**
+     * Sleep for the full-jitter backoff before the next attempt.
+     *
+     * <p>The retry loop above has no attempt limit. The server's rate limiter holds
+     * for 30s at a time, and a single load has been observed absorbing over 375,000
+     * rejections, so a long run of rejections is normal behaviour under a hold
+     * rather than evidence of a hang. Failing on it would abort exactly the loads
+     * this retry logic exists to make survivable.
+     *
+     * <p>That leaves the Evergreen task timeout as the only outer bound. A
+     * driver-level {@code timeoutMS} would be the principled one, but it cannot be
+     * sized from the batch latencies we measure, because with batching the recorded
+     * latency of one insert includes this method's sleeps and {@code timeoutMS}
+     * never sees them. Setting it too low is worse than leaving it unset: a driver
+     * timeout is not an overload error, so it propagates and turns a survivable
+     * episode into a failed load. Tracked on PERF-8502.
+     *
+     * <p>Logs at widening intervals so a load that never progresses is still
+     * diagnosable from the task log.
+     */
+    private static void awaitRetry(String op, int attempt) {
+        if (attempt == 10 || attempt == 50 || (attempt >= 100 && attempt % 100 == 0)) {
+            System.err.println("[OVERLOAD-RETRY] " + op + " still retrying after "
+                + attempt + " overload rejections on this operation; the server is "
+                + "rejecting writes and the load is waiting it out.");
+        }
+        try {
+            Thread.sleep(OverloadPolicy.backoffDelayMs(attempt));
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Insert one record, retrying while every failure is an overload rejection.
+     *
+     * <p>Idempotent because YCSB load keys are deterministic and unique: a
+     * duplicate-key error on a retry means the original attempt actually
+     * committed before its rejection was reported, so it counts as success.
+     * Only forgiven from attempt 1 onward: a duplicate on the very first attempt
+     * means the collection was not empty, which is a setup problem and must
+     * surface (stock YCSB fails here too).
+     */
+    private void insertOneWithOverloadRetry(MongoCollection<Document> collection, Document doc)
+        throws Exception {
+        int attempt = 0;
+        while (true) {
+            try {
+                collection.insertOne(doc);
+                return;
+            } catch (Exception e) {
+                switch (OverloadPolicy.singleInsertOutcome(e, attempt)) {
+                case ALREADY_COMMITTED:
+                    return;
+                case RETRY:
+                    attempt++;
+                    recordOverloadRetry("INSERT");
+                    awaitRetry("INSERT", attempt);
+                    break;
+                default:
+                    throw e;
+                }
+            }
+        }
+    }
+
+    /**
+     * Insert a batch, retrying only the rejected entries.
+     *
+     * <p>Unordered so a rejection partway through does not abandon the rest of
+     * the batch: successful entries commit, and only the overload indices are
+     * retried. Duplicate-key errors are forgiven from attempt 1 onward, for the
+     * same reason as {@link #insertOneWithOverloadRetry}.
+     *
+     * <p>Classification lives in {@link OverloadPolicy#triageBulkErrors}; this
+     * method only maps indices back to documents and does the waiting.
+     */
+    private void insertManyWithOverloadRetry(MongoCollection<Document> collection,
+                                             List<Document> docs) throws Exception {
+        InsertManyOptions options = new InsertManyOptions().ordered(false);
+        List<Document> remaining = docs;
+        int attempt = 0;
+        int labelFallbackRounds = 0;
+        while (!remaining.isEmpty()) {
+            try {
+                collection.insertMany(remaining, options);
+                return;
+            } catch (MongoBulkWriteException e) {
+                OverloadPolicy.BulkRetryDecision decision = OverloadPolicy.triageBulkErrors(
+                    e.getWriteErrors(), e.hasErrorLabel(OverloadPolicy.OVERLOAD_LABEL), attempt);
+                if (decision.isFatal()) {
+                    throw e;
+                }
+                if (decision.getRetryIndices().isEmpty()) {
+                    // Every remaining error was a forgiven duplicate: the batch landed.
+                    return;
+                }
+                if (decision.usedLabelFallback()) {
+                    labelFallbackRounds++;
+                    if (labelFallbackRounds > OverloadPolicy.UNRECOGNISED_CODE_RETRY_LIMIT) {
+                        // An unrecognised code has survived every retry. More likely a
+                        // genuine per-document error inside an overloaded batch than a
+                        // new overload code, so stop guessing and fail loudly.
+                        System.err.println("[OVERLOAD-RETRY] giving up after "
+                            + labelFallbackRounds + " rounds retrying unrecognised error "
+                            + "codes under the " + OverloadPolicy.OVERLOAD_LABEL + " label; "
+                            + "treating them as a genuine write error.");
+                        throw e;
+                    }
+                } else {
+                    labelFallbackRounds = 0;
+                }
+                List<Document> retry = new ArrayList<Document>(decision.getRetryIndices().size());
+                for (Integer index : decision.getRetryIndices()) {
+                    retry.add(remaining.get(index));
+                }
+                attempt++;
+                recordOverloadRetry("INSERT");
+                awaitRetry("INSERT", attempt);
+                remaining = retry;
+            } catch (MongoServerException e) {
+                if (!OverloadPolicy.isOverload(e)) {
+                    throw e;
+                }
+                attempt++;
+                recordOverloadRetry("INSERT");
+                awaitRetry("INSERT", attempt);
+            }
+        }
+    }
+
+    /**
      * Initialize any state for this DB.
      * Called once per DB instance; there is one DB instance per client thread.
      */
@@ -406,6 +576,23 @@ public class MongoDbClient extends DB {
             // initialize MongoDb driver
             Properties props = getProperties();
             String urls = props.getProperty("mongodb.url", "mongodb://localhost:27017");
+
+            // YCSB sets dotransactions=false when invoked with -load. Default
+            // ("true") covers the run/transaction path.
+            inLoadPhase = "false".equalsIgnoreCase(props.getProperty("dotransactions", "true"));
+            if (inLoadPhase) {
+                OverloadPolicy.RetryMode retryMode = OverloadPolicy.retryModeForLoad(
+                    props.getProperty(OverloadPolicy.RETRY_ENABLED_PROPERTY),
+                    props.getProperty("maxexecutiontime"));
+                overloadRetryEnabled = retryMode.isEnabled();
+                synchronized (MongoDbClient.class) {
+                    if (!retryModeLogged) {
+                        retryModeLogged = true;
+                        System.out.println("[OVERLOAD-RETRY], Mode, " + retryMode.name());
+                        System.out.println("[OVERLOAD-RETRY], Reason, " + retryMode.reason());
+                    }
+                }
+            }
 
             /* Credentials */
             database = props.getProperty("mongodb.database", "ycsb");
@@ -582,7 +769,11 @@ public class MongoDbClient extends DB {
             try {
                 MongoCollection<Document> collection =
                     db[serverCounter++ % db.length].getCollection(bulkInsertTable);
-                collection.insertMany(insertList);
+                if (inLoadPhase && overloadRetryEnabled) {
+                    insertManyWithOverloadRetry(collection, insertList);
+                } else {
+                    collection.insertMany(insertList);
+                }
             } catch (Exception e) {
                 System.err.println("Exception while flushing remaining "
                     + insertCount + " inserts during cleanup");
@@ -593,6 +784,14 @@ public class MongoDbClient extends DB {
             }
         }
         if (initCount.decrementAndGet() <= 0) {
+            long totalRetries = 0;
+            for (Map.Entry<String, AtomicLong> entry : overloadRetries.entrySet()) {
+                long count = entry.getValue().get();
+                totalRetries += count;
+                System.out.println("[" + entry.getKey() + "-OVERLOAD-RETRIES], Count, " + count);
+            }
+            System.out.println("[OVERLOAD-RETRIES], TotalCount, " + totalRetries);
+
             for (MongoClient mongoClient : mongo) {
                 try {
                     mongoClient.close();
@@ -627,6 +826,10 @@ public class MongoDbClient extends DB {
             return Status.OK;
         }
         catch (Exception e) {
+            Status overload = OverloadPolicy.statusFor(e);
+            if (overload != null) {
+                return overload;
+            }
             System.err.println(e.toString());
             e.printStackTrace();
             return Status.ERROR;
@@ -657,10 +860,20 @@ public class MongoDbClient extends DB {
         }
         if (BATCHSIZE == 1 ) {
            try {
-             collection.insertOne(r);
+             if (inLoadPhase && overloadRetryEnabled) {
+               insertOneWithOverloadRetry(collection, r);
+             } else {
+               collection.insertOne(r);
+             }
              return Status.OK;
            }
            catch (Exception e) {
+             if (!inLoadPhase) {
+               Status overload = OverloadPolicy.statusFor(e);
+               if (overload != null) {
+                 return overload;
+               }
+             }
              System.err.println("Couldn't insert key " + key);
              e.printStackTrace();
              return Status.ERROR;
@@ -676,15 +889,37 @@ public class MongoDbClient extends DB {
             return Status.OK;
         } else {
            try {
-             collection.insertMany(insertList);
+             if (inLoadPhase && overloadRetryEnabled) {
+               insertManyWithOverloadRetry(collection, insertList);
+             } else {
+               collection.insertMany(insertList);
+             }
              insertCount = 0;
              return Status.OK;
            }
-           catch (Exception e) {
-             System.err.println("Exception while trying bulk insert with " + insertCount);
-             e.printStackTrace();
-             return Status.ERROR;
-           }
+            catch (Exception e) {
+              if (!inLoadPhase) {
+                Status overload = OverloadPolicy.statusFor(e);
+                if (overload != null) {
+                  // Drop the rejected batch. A measurement-phase rejection is a lost
+                  // transaction, not lost data, and the batch must not be carried
+                  // forward: under sustained rejection the accumulating list would
+                  // grow without bound and each resubmission would get larger.
+                  insertCount = 0;
+                  return overload;
+                }
+              }
+              // Stock behaviour, deliberately unchanged: the batch is left in place so
+              // the next insert() resubmits it. This path is what runs when retry is
+              // disabled, and one of the reasons retry is switchable is so the same
+              // binary can also serve as a customer-representative canary that fails
+              // on overload the way unmodified YCSB does. Any drift here makes that
+              // canary measure something other than stock, including dropping the
+              // batch, which is arguably the better behaviour.
+              System.err.println("Exception while trying bulk insert with " + insertCount);
+              e.printStackTrace();
+              return Status.ERROR;
+            }
         }
     }
 
@@ -728,6 +963,10 @@ public class MongoDbClient extends DB {
             return Status.ERROR;
         }
         catch (Exception e) {
+            Status overload = OverloadPolicy.statusFor(e);
+            if (overload != null) {
+                return overload;
+            }
             System.err.println(e.toString());
             return Status.ERROR;
         }
@@ -767,6 +1006,10 @@ public class MongoDbClient extends DB {
             return Status.OK;
         }
         catch (Exception e) {
+            Status overload = OverloadPolicy.statusFor(e);
+            if (overload != null) {
+                return overload;
+            }
             System.err.println(e.toString());
             return Status.ERROR;
         }
@@ -818,6 +1061,10 @@ public class MongoDbClient extends DB {
             return Status.OK;
         }
         catch (Exception e) {
+            Status overload = OverloadPolicy.statusFor(e);
+            if (overload != null) {
+                return overload;
+            }
             System.err.println(e.toString());
             return Status.ERROR;
         }

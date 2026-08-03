@@ -37,6 +37,12 @@
       <artifactId>zstd-jni</artifactId>
       <version>${zstd.version}</version>
     </dependency>
+    <dependency>
+      <groupId>org.testng</groupId>
+      <artifactId>testng</artifactId>
+      <version>7.7.0</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
  
   <build>
