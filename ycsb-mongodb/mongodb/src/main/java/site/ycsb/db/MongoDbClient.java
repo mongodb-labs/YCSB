@@ -159,6 +159,13 @@ public class MongoDbClient extends DB {
      */
     private static volatile boolean overloadRetryEnabled = true;
 
+    /**
+     * The total number of records the load phase was asked to insert (YCSB's
+     * {@code recordcount} property). Used as the denominator for the error-fraction
+     * gate in {@link #cleanup()}.
+     */
+    private static volatile long recordCount = 0;
+
     /** Ensures the resolved retry mode is printed once per JVM, not once per thread. */
     private static boolean retryModeLogged = false;
 
@@ -593,6 +600,13 @@ public class MongoDbClient extends DB {
                 }
             }
 
+            String recordCountStr = props.getProperty("recordcount", "0");
+            try {
+                recordCount = Long.parseLong(recordCountStr.trim());
+            } catch (NumberFormatException e) {
+                recordCount = 0;
+            }
+
             /* Credentials */
             database = props.getProperty("mongodb.database", "ycsb");
 
@@ -795,6 +809,15 @@ public class MongoDbClient extends DB {
                 try {
                     mongoClient.close();
                 } catch (Exception e1) { /* ignore */ }
+            }
+
+            if (inLoadPhase && overloadRetryEnabled
+                    && OverloadPolicy.overloadFractionExceeded(totalRetries, recordCount)) {
+                double pct = (double) totalRetries / recordCount * 100;
+                System.err.println("[OVERLOAD-FRACTION-EXCEEDED] " + totalRetries + " retries / "
+                    + recordCount + " inserts = " + String.format("%.4f%%", pct)
+                    + " exceeds " + (OverloadPolicy.OVERLOAD_FRACTION_THRESHOLD * 100) + "%");
+                System.exit(1);
             }
         }
     }
