@@ -147,6 +147,38 @@ public class OverloadPolicyTest {
     }
   }
 
+  // ── Error-fraction gate ──────────────────────────────────────────
+
+  @Test
+  public void overloadFractionBelowThresholdPasses() {
+    // 23,000 / 56,000,000 = 0.041% — below the 0.1% threshold.
+    assertFalse(OverloadPolicy.overloadFractionExceeded(23_000, 56_000_000));
+  }
+
+  @Test
+  public void overloadFractionAboveThresholdFails() {
+    // 100,000 / 56,000,000 = 0.179% — above the 0.1% threshold.
+    assertTrue(OverloadPolicy.overloadFractionExceeded(100_000, 56_000_000));
+  }
+
+  @Test
+  public void overloadFractionAtExactThresholdPasses() {
+    // 56,000 / 56,000,000 = exactly 0.1%. The gate uses >, not >=, so the
+    // boundary passes.
+    assertFalse(OverloadPolicy.overloadFractionExceeded(56_000, 56_000_000));
+  }
+
+  @Test
+  public void overloadFractionWithZeroTotalInsertsPasses() {
+    // Cannot compute a fraction without a denominator — do not fail.
+    assertFalse(OverloadPolicy.overloadFractionExceeded(1_000, 0));
+  }
+
+  @Test
+  public void overloadFractionWithZeroRetriesPasses() {
+    assertFalse(OverloadPolicy.overloadFractionExceeded(0, 56_000_000));
+  }
+
   // ── Single-document insert triage ────────────────────────────────
 
   @Test

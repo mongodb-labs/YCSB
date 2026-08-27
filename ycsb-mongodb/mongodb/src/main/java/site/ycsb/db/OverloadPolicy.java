@@ -299,6 +299,22 @@ final class OverloadPolicy {
     return ThreadLocalRandom.current().nextLong(backoffBoundMs(attempt) + 1);
   }
 
+  /** Maximum allowed fraction of overload retries to total inserts before the load fails. */
+  static final double OVERLOAD_FRACTION_THRESHOLD = 0.001; // 0.1%
+
+  /**
+   * True when the overload retry fraction exceeds the threshold.
+   *
+   * @param totalRetries total overload retry attempts across all threads
+   * @param totalInserts the recordcount the load targeted
+   */
+  static boolean overloadFractionExceeded(long totalRetries, long totalInserts) {
+    if (totalInserts <= 0) {
+      return false;
+    }
+    return (double) totalRetries / totalInserts > OVERLOAD_FRACTION_THRESHOLD;
+  }
+
   /** Property that forces load-phase retry on or off, overriding the default. */
   static final String RETRY_ENABLED_PROPERTY = "mongodb.overload.retry.enabled";
 
