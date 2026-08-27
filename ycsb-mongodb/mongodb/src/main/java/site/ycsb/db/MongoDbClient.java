@@ -605,6 +605,7 @@ public class MongoDbClient extends DB {
                 recordCount = Long.parseLong(recordCountStr.trim());
             } catch (NumberFormatException e) {
                 recordCount = 0;
+                System.err.println("[OVERLOAD-FRACTION-GATE] Disabled: recordcount='" + recordCountStr + "' is not a valid number; the error-fraction gate will not fire.");
             }
 
             /* Credentials */
