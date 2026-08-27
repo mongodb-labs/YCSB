@@ -119,47 +119,24 @@ public class OverloadPolicyTest {
   }
 
   @Test
-  public void retryIsOnByDefaultForARecordBoundedLoad() {
-    // No explicit property, no maxexecutiontime: the ordinary setup load.
-    OverloadPolicy.RetryMode mode = OverloadPolicy.retryModeForLoad(null, null);
+  public void retryIsOnByDefault() {
+    OverloadPolicy.RetryMode mode = OverloadPolicy.retryModeForLoad(null);
     assertEquals(mode, OverloadPolicy.RetryMode.ENABLED_BY_DEFAULT);
     assertTrue(mode.isEnabled());
   }
 
   @Test
-  public void retryIsOffForATimeCappedLoad() {
-    // ycsb.load.2024-05 and heat_4x_ycsb.load measure their load phase against a
-    // clock, so backoff would eat the measured window.
-    OverloadPolicy.RetryMode mode = OverloadPolicy.retryModeForLoad(null, "600");
-    assertEquals(mode, OverloadPolicy.RetryMode.DISABLED_TIME_CAPPED_LOAD);
-    assertFalse(mode.isEnabled());
-  }
-
-  @Test
-  public void aZeroTimeCapDoesNotCountAsCapped() {
-    assertTrue(OverloadPolicy.retryModeForLoad(null, "0").isEnabled());
-  }
-
-  @Test
-  public void aBlankOrUnparseableTimeCapDoesNotCountAsCapped() {
-    // Unresolved config interpolation must not silently disable retry.
-    assertTrue(OverloadPolicy.retryModeForLoad(null, "").isEnabled());
-    assertTrue(OverloadPolicy.retryModeForLoad(null, "   ").isEnabled());
-    assertTrue(OverloadPolicy.retryModeForLoad(null, "${notresolved}").isEnabled());
-  }
-
-  @Test
-  public void explicitPropertyWinsOverTheTimeCap() {
-    assertEquals(OverloadPolicy.retryModeForLoad("true", "600"),
+  public void explicitPropertyWins() {
+    assertEquals(OverloadPolicy.retryModeForLoad("true"),
         OverloadPolicy.RetryMode.ENABLED_BY_PROPERTY);
-    assertTrue(OverloadPolicy.retryModeForLoad("true", "600").isEnabled());
+    assertTrue(OverloadPolicy.retryModeForLoad("true").isEnabled());
   }
 
   @Test
-  public void explicitPropertyCanDisableARecordBoundedLoad() {
-    assertEquals(OverloadPolicy.retryModeForLoad("false", null),
+  public void explicitPropertyCanDisable() {
+    assertEquals(OverloadPolicy.retryModeForLoad("false"),
         OverloadPolicy.RetryMode.DISABLED_BY_PROPERTY);
-    assertFalse(OverloadPolicy.retryModeForLoad("false", null).isEnabled());
+    assertFalse(OverloadPolicy.retryModeForLoad("false").isEnabled());
   }
 
   @Test

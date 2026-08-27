@@ -307,21 +307,14 @@ final class OverloadPolicy {
    *
    * <p>Retry is on by default: an incomplete load produces a broken dataset and a
    * failing query phase, which is the whole problem PERF-8502 addresses, and it
-   * affects roughly twenty tasks rather than one.
-   *
-   * <p>The exception is a load phase that is itself the measurement. Those are
-   * capped with {@code maxexecutiontime}, so retry backoff would consume the
-   * measured window and depress reported insert throughput. A record-bounded load
-   * has no such problem: retrying costs wall-clock and still reaches the same
-   * complete dataset.
+   * affects roughly twenty tasks rather than one. Post-merge data showed the
+   * backoff overhead at observed shed rates is within the noise floor, so the
+   * time-capped exclusion PERF-8502 introduced was removed (PERF-9451).
    */
   enum RetryMode {
-    ENABLED_BY_DEFAULT(true, "record-bounded load phase (no maxexecutiontime)"),
+    ENABLED_BY_DEFAULT(true, "load phase (retry on by default)"),
     ENABLED_BY_PROPERTY(true, "forced on by " + RETRY_ENABLED_PROPERTY),
-    DISABLED_BY_PROPERTY(false, "forced off by " + RETRY_ENABLED_PROPERTY),
-    DISABLED_TIME_CAPPED_LOAD(false,
-        "load phase is time-capped by maxexecutiontime, so it is the measurement; "
-        + "retry backoff would consume the measured window");
+    DISABLED_BY_PROPERTY(false, "forced off by " + RETRY_ENABLED_PROPERTY);
 
     private final boolean enabled;
     private final String reason;
@@ -344,35 +337,14 @@ final class OverloadPolicy {
    * Decide whether the load phase should retry overload rejections.
    *
    * @param explicitSetting value of {@link #RETRY_ENABLED_PROPERTY}, or null when unset
-   * @param maxExecutionTime value of YCSB's {@code maxexecutiontime}, or null when unset
    */
-  static RetryMode retryModeForLoad(String explicitSetting, String maxExecutionTime) {
+  static RetryMode retryModeForLoad(String explicitSetting) {
     if (explicitSetting != null && !explicitSetting.trim().isEmpty()) {
       return Boolean.parseBoolean(explicitSetting.trim())
           ? RetryMode.ENABLED_BY_PROPERTY
           : RetryMode.DISABLED_BY_PROPERTY;
     }
-    return isTimeCapped(maxExecutionTime)
-        ? RetryMode.DISABLED_TIME_CAPPED_LOAD
-        : RetryMode.ENABLED_BY_DEFAULT;
-  }
-
-  /**
-   * True when {@code maxExecutionTime} is a positive number.
-   *
-   * <p>Anything unparseable counts as absent: an unresolved config interpolation
-   * must not quietly switch retry off, because that would reintroduce the
-   * incomplete-load failure with no visible cause.
-   */
-  private static boolean isTimeCapped(String maxExecutionTime) {
-    if (maxExecutionTime == null || maxExecutionTime.trim().isEmpty()) {
-      return false;
-    }
-    try {
-      return Long.parseLong(maxExecutionTime.trim()) > 0;
-    } catch (NumberFormatException e) {
-      return false;
-    }
+    return RetryMode.ENABLED_BY_DEFAULT;
   }
 
 }

@@ -582,8 +582,7 @@ public class MongoDbClient extends DB {
             inLoadPhase = "false".equalsIgnoreCase(props.getProperty("dotransactions", "true"));
             if (inLoadPhase) {
                 OverloadPolicy.RetryMode retryMode = OverloadPolicy.retryModeForLoad(
-                    props.getProperty(OverloadPolicy.RETRY_ENABLED_PROPERTY),
-                    props.getProperty("maxexecutiontime"));
+                    props.getProperty(OverloadPolicy.RETRY_ENABLED_PROPERTY));
                 overloadRetryEnabled = retryMode.isEnabled();
                 synchronized (MongoDbClient.class) {
                     if (!retryModeLogged) {
