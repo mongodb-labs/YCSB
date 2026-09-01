@@ -119,47 +119,24 @@ public class OverloadPolicyTest {
   }
 
   @Test
-  public void retryIsOnByDefaultForARecordBoundedLoad() {
-    // No explicit property, no maxexecutiontime: the ordinary setup load.
-    OverloadPolicy.RetryMode mode = OverloadPolicy.retryModeForLoad(null, null);
+  public void retryIsOnByDefault() {
+    OverloadPolicy.RetryMode mode = OverloadPolicy.retryModeForLoad(null);
     assertEquals(mode, OverloadPolicy.RetryMode.ENABLED_BY_DEFAULT);
     assertTrue(mode.isEnabled());
   }
 
   @Test
-  public void retryIsOffForATimeCappedLoad() {
-    // ycsb.load.2024-05 and heat_4x_ycsb.load measure their load phase against a
-    // clock, so backoff would eat the measured window.
-    OverloadPolicy.RetryMode mode = OverloadPolicy.retryModeForLoad(null, "600");
-    assertEquals(mode, OverloadPolicy.RetryMode.DISABLED_TIME_CAPPED_LOAD);
-    assertFalse(mode.isEnabled());
-  }
-
-  @Test
-  public void aZeroTimeCapDoesNotCountAsCapped() {
-    assertTrue(OverloadPolicy.retryModeForLoad(null, "0").isEnabled());
-  }
-
-  @Test
-  public void aBlankOrUnparseableTimeCapDoesNotCountAsCapped() {
-    // Unresolved config interpolation must not silently disable retry.
-    assertTrue(OverloadPolicy.retryModeForLoad(null, "").isEnabled());
-    assertTrue(OverloadPolicy.retryModeForLoad(null, "   ").isEnabled());
-    assertTrue(OverloadPolicy.retryModeForLoad(null, "${notresolved}").isEnabled());
-  }
-
-  @Test
-  public void explicitPropertyWinsOverTheTimeCap() {
-    assertEquals(OverloadPolicy.retryModeForLoad("true", "600"),
+  public void explicitPropertyWins() {
+    assertEquals(OverloadPolicy.retryModeForLoad("true"),
         OverloadPolicy.RetryMode.ENABLED_BY_PROPERTY);
-    assertTrue(OverloadPolicy.retryModeForLoad("true", "600").isEnabled());
+    assertTrue(OverloadPolicy.retryModeForLoad("true").isEnabled());
   }
 
   @Test
-  public void explicitPropertyCanDisableARecordBoundedLoad() {
-    assertEquals(OverloadPolicy.retryModeForLoad("false", null),
+  public void explicitPropertyCanDisable() {
+    assertEquals(OverloadPolicy.retryModeForLoad("false"),
         OverloadPolicy.RetryMode.DISABLED_BY_PROPERTY);
-    assertFalse(OverloadPolicy.retryModeForLoad("false", null).isEnabled());
+    assertFalse(OverloadPolicy.retryModeForLoad("false").isEnabled());
   }
 
   @Test
@@ -168,6 +145,64 @@ public class OverloadPolicyTest {
     for (OverloadPolicy.RetryMode mode : OverloadPolicy.RetryMode.values()) {
       assertTrue(mode.reason() != null && !mode.reason().isEmpty(), mode.name());
     }
+  }
+
+  // ── Error-fraction gate ──────────────────────────────────────────
+
+  private static final double THRESHOLD = OverloadPolicy.DEFAULT_OVERLOAD_FRACTION_THRESHOLD;
+
+  @Test
+  public void overloadFractionBelowThresholdPasses() {
+    // 23,000 / 56,000,000 = 0.041% — below the 0.1% threshold.
+    assertFalse(OverloadPolicy.overloadFractionExceeded(23_000, 56_000_000, THRESHOLD));
+  }
+
+  @Test
+  public void overloadFractionAboveThresholdFails() {
+    // 100,000 / 56,000,000 = 0.179% — above the 0.1% threshold.
+    assertTrue(OverloadPolicy.overloadFractionExceeded(100_000, 56_000_000, THRESHOLD));
+  }
+
+  @Test
+  public void overloadFractionAtExactThresholdPasses() {
+    // 56,000 / 56,000,000 = exactly 0.1%. The gate uses >, not >=, so the
+    // boundary passes.
+    assertFalse(OverloadPolicy.overloadFractionExceeded(56_000, 56_000_000, THRESHOLD));
+  }
+
+  @Test
+  public void overloadFractionWithZeroTotalInsertsPasses() {
+    // Cannot compute a fraction without a denominator — do not fail.
+    assertFalse(OverloadPolicy.overloadFractionExceeded(1_000, 0, THRESHOLD));
+  }
+
+  @Test
+  public void overloadFractionWithZeroRetriesPasses() {
+    assertFalse(OverloadPolicy.overloadFractionExceeded(0, 56_000_000, THRESHOLD));
+  }
+
+  @Test
+  public void customThresholdCanRelaxTheGate() {
+    // 100,000 / 56M = 0.179% — fails the default 0.1% gate but passes a 1% gate.
+    assertFalse(OverloadPolicy.overloadFractionExceeded(100_000, 56_000_000, 0.01));
+  }
+
+  @Test
+  public void customThresholdCanTightenTheGate() {
+    // 23,000 / 56M = 0.041% — passes the default 0.1% gate but fails a 0.01% gate.
+    assertTrue(OverloadPolicy.overloadFractionExceeded(23_000, 56_000_000, 0.0001));
+  }
+
+  @Test
+  public void customThresholdAtExactBoundaryPasses() {
+    // 560 / 56,000 = 1.0% exactly. The gate uses >, not >=.
+    assertFalse(OverloadPolicy.overloadFractionExceeded(560, 56_000, 0.01));
+  }
+
+  @Test
+  public void overloadFractionPropertyConstantExists() {
+    // Guards that the property name is stable for DSI/YCSB config files.
+    assertEquals(OverloadPolicy.OVERLOAD_FRACTION_PROPERTY, "mongodb.overload.fraction.threshold");
   }
 
   // ── Single-document insert triage ────────────────────────────────
