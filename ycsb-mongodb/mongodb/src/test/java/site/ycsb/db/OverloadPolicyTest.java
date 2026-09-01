@@ -179,6 +179,30 @@ public class OverloadPolicyTest {
     assertFalse(OverloadPolicy.overloadFractionExceeded(0, 56_000_000));
   }
 
+  @Test
+  public void customThresholdCanRelaxTheGate() {
+    // 100,000 / 56M = 0.179% — fails the default 0.1% gate but passes a 1% gate.
+    assertFalse(OverloadPolicy.overloadFractionExceeded(100_000, 56_000_000, 0.01));
+  }
+
+  @Test
+  public void customThresholdCanTightenTheGate() {
+    // 23,000 / 56M = 0.041% — passes the default 0.1% gate but fails a 0.01% gate.
+    assertTrue(OverloadPolicy.overloadFractionExceeded(23_000, 56_000_000, 0.0001));
+  }
+
+  @Test
+  public void customThresholdAtExactBoundaryPasses() {
+    // 560 / 56,000 = 1.0% exactly. The gate uses >, not >=.
+    assertFalse(OverloadPolicy.overloadFractionExceeded(560, 56_000, 0.01));
+  }
+
+  @Test
+  public void overloadFractionPropertyConstantExists() {
+    // Guards that the property name is stable for DSI/YCSB config files.
+    assertEquals(OverloadPolicy.OVERLOAD_FRACTION_PROPERTY, "mongodb.overload.fraction.threshold");
+  }
+
   // ── Single-document insert triage ────────────────────────────────
 
   @Test

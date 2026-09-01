@@ -166,6 +166,14 @@ public class MongoDbClient extends DB {
      */
     private static volatile long recordCount = 0;
 
+    /**
+     * The configured overload fraction threshold. Defaults to
+     * {@link OverloadPolicy#DEFAULT_OVERLOAD_FRACTION_THRESHOLD} and can be
+     * overridden via {@link OverloadPolicy#OVERLOAD_FRACTION_PROPERTY}.
+     */
+    private static volatile double overloadFractionThreshold =
+        OverloadPolicy.DEFAULT_OVERLOAD_FRACTION_THRESHOLD;
+
     /** Ensures the resolved retry mode is printed once per JVM, not once per thread. */
     private static boolean retryModeLogged = false;
 
@@ -605,7 +613,21 @@ public class MongoDbClient extends DB {
                 recordCount = Long.parseLong(recordCountStr.trim());
             } catch (NumberFormatException e) {
                 recordCount = 0;
-                System.err.println("[OVERLOAD-FRACTION-GATE] Disabled: recordcount='" + recordCountStr + "' is not a valid number; the error-fraction gate will not fire.");
+                System.err.println("[OVERLOAD-FRACTION-GATE] Disabled: recordcount='"
+                    + recordCountStr + "' is not a valid number; "
+                    + "the error-fraction gate will not fire.");
+            }
+
+            String thresholdStr = props.getProperty(OverloadPolicy.OVERLOAD_FRACTION_PROPERTY);
+            if (thresholdStr != null && !thresholdStr.trim().isEmpty()) {
+                try {
+                    overloadFractionThreshold = Double.parseDouble(thresholdStr.trim());
+                    System.out.println("[OVERLOAD-FRACTION-GATE], Threshold, " + overloadFractionThreshold);
+                } catch (NumberFormatException e) {
+                    overloadFractionThreshold = OverloadPolicy.DEFAULT_OVERLOAD_FRACTION_THRESHOLD;
+                    System.err.println("[OVERLOAD-FRACTION-GATE] Invalid threshold '" + thresholdStr
+                        + "'; using default " + OverloadPolicy.DEFAULT_OVERLOAD_FRACTION_THRESHOLD);
+                }
             }
 
             /* Credentials */
@@ -813,11 +835,19 @@ public class MongoDbClient extends DB {
             }
 
             if (inLoadPhase && overloadRetryEnabled
-                    && OverloadPolicy.overloadFractionExceeded(totalRetries, recordCount)) {
+                    && OverloadPolicy.overloadFractionExceeded(totalRetries, recordCount,
+                        overloadFractionThreshold)) {
                 double pct = (double) totalRetries / recordCount * 100;
                 System.err.println("[OVERLOAD-FRACTION-EXCEEDED] " + totalRetries + " retries / "
                     + recordCount + " inserts = " + String.format("%.4f%%", pct)
-                    + " exceeds " + (OverloadPolicy.OVERLOAD_FRACTION_THRESHOLD * 100) + "%");
+                    + " exceeds " + (overloadFractionThreshold * 100) + "%");
+                System.err.println("[OVERLOAD-FRACTION-EXCEEDED] The load completed via retry, "
+                    + "but the server rejected more operations than the threshold allows. "
+                    + "This is a regression signal: investigate whether a server, policy, or "
+                    + "workload change increased overload shedding.");
+                System.err.println("[OVERLOAD-FRACTION-EXCEEDED] If the new shedding rate is "
+                    + "expected, raise the threshold via "
+                    + OverloadPolicy.OVERLOAD_FRACTION_PROPERTY + ".");
                 System.exit(1);
             }
         }

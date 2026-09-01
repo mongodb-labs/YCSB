@@ -299,20 +299,38 @@ final class OverloadPolicy {
     return ThreadLocalRandom.current().nextLong(backoffBoundMs(attempt) + 1);
   }
 
-  /** Maximum allowed fraction of overload retries to total inserts before the load fails. */
-  static final double OVERLOAD_FRACTION_THRESHOLD = 0.001; // 0.1%
+  /** Default maximum allowed fraction of overload retries to record count before the load fails. */
+  static final double DEFAULT_OVERLOAD_FRACTION_THRESHOLD = 0.001; // 0.1%
+
+  /** Property that overrides the overload fraction threshold (a double between 0 and 1). */
+  static final String OVERLOAD_FRACTION_PROPERTY = "mongodb.overload.fraction.threshold";
 
   /**
-   * True when the overload retry fraction exceeds the threshold.
+   * True when the overload retry fraction exceeds the given threshold.
    *
    * @param totalRetries total overload retry attempts across all threads
-   * @param totalInserts the recordcount the load targeted
+   * @param recordCount the expected number of documents to load (YCSB's
+   *     {@code recordcount} property). When {@code <= 0} the denominator is
+   *     unknown and the gate does not fire.
+   * @param threshold the maximum allowed retry-to-recordCount fraction
+   *     (e.g. {@code 0.001} for 0.1%)
    */
-  static boolean overloadFractionExceeded(long totalRetries, long totalInserts) {
-    if (totalInserts <= 0) {
+  static boolean overloadFractionExceeded(long totalRetries, long recordCount, double threshold) {
+    if (recordCount <= 0) {
       return false;
     }
-    return (double) totalRetries / totalInserts > OVERLOAD_FRACTION_THRESHOLD;
+    return (double) totalRetries / recordCount > threshold;
+  }
+
+  /**
+   * True when the overload retry fraction exceeds the default threshold.
+   *
+   * @param totalRetries total overload retry attempts across all threads
+   * @param recordCount the expected number of documents to load. When
+   *     {@code <= 0} the denominator is unknown and the gate does not fire.
+   */
+  static boolean overloadFractionExceeded(long totalRetries, long recordCount) {
+    return overloadFractionExceeded(totalRetries, recordCount, DEFAULT_OVERLOAD_FRACTION_THRESHOLD);
   }
 
   /** Property that forces load-phase retry on or off, overriding the default. */
