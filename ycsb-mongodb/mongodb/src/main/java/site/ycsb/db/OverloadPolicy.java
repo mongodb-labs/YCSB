@@ -322,17 +322,6 @@ final class OverloadPolicy {
     return (double) totalRetries / recordCount > threshold;
   }
 
-  /**
-   * True when the overload retry fraction exceeds the default threshold.
-   *
-   * @param totalRetries total overload retry attempts across all threads
-   * @param recordCount the expected number of documents to load. When
-   *     {@code <= 0} the denominator is unknown and the gate does not fire.
-   */
-  static boolean overloadFractionExceeded(long totalRetries, long recordCount) {
-    return overloadFractionExceeded(totalRetries, recordCount, DEFAULT_OVERLOAD_FRACTION_THRESHOLD);
-  }
-
   /** Property that forces load-phase retry on or off, overriding the default. */
   static final String RETRY_ENABLED_PROPERTY = "mongodb.overload.retry.enabled";
 
